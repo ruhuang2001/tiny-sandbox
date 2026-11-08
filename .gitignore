@@ -1,0 +1,8 @@
+# Local-only coding-agent prompt. Design and contracts live in docs/.
+/plan.md
+
+# Build output
+/bin/
+
+# Test and end-to-end evidence is regenerated, not committed.
+/coverage.out
