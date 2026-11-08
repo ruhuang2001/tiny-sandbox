@@ -1,0 +1,52 @@
+package dockerapi
+
+// ContainerConfig is the body of POST /containers/create. Only the fields the
+// sandbox backend sets are modelled; the Engine API ignores the rest.
+type ContainerConfig struct {
+	Image      string            `json:"Image"`
+	Cmd        []string          `json:"Cmd,omitempty"`
+	Env        []string          `json:"Env,omitempty"`
+	Labels     map[string]string `json:"Labels,omitempty"`
+	HostConfig HostConfig        `json:"HostConfig"`
+}
+
+// HostConfig carries the resource limits. MemorySwap is set equal to Memory
+// so a sandbox cannot use swap to exceed its declared memory limit.
+type HostConfig struct {
+	Memory     int64             `json:"Memory,omitempty"`
+	MemorySwap int64             `json:"MemorySwap,omitempty"`
+	Tmpfs      map[string]string `json:"Tmpfs,omitempty"`
+}
+
+// Container is one entry of GET /containers/json.
+type Container struct {
+	ID     string            `json:"Id"`
+	Names  []string          `json:"Names"`
+	Image  string            `json:"Image"`
+	State  string            `json:"State"`
+	Status string            `json:"Status"`
+	Labels map[string]string `json:"Labels"`
+}
+
+// ExecInspect is the body of GET /exec/{id}/json. ExitCode is null until the
+// process exits.
+type ExecInspect struct {
+	ID          string `json:"ID"`
+	Running     bool   `json:"Running"`
+	ExitCode    *int   `json:"ExitCode"`
+	Pid         int    `json:"Pid"`
+	ContainerID string `json:"ContainerID"`
+}
+
+type execConfig struct {
+	AttachStdin  bool     `json:"AttachStdin"`
+	AttachStdout bool     `json:"AttachStdout"`
+	AttachStderr bool     `json:"AttachStderr"`
+	Tty          bool     `json:"Tty"`
+	Cmd          []string `json:"Cmd"`
+}
+
+type execStart struct {
+	Detach bool `json:"Detach"`
+	Tty    bool `json:"Tty"`
+}
