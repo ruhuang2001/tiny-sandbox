@@ -66,7 +66,7 @@ func main() {
 // both what a command prints and what it returns.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
+		_, _ = fmt.Fprint(stderr, usage)
 		return 2
 	}
 
@@ -78,7 +78,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	args = g.rest
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
+		_, _ = fmt.Fprint(stderr, usage)
 		return 2
 	}
 
@@ -87,10 +87,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	switch command {
 	case "version":
-		fmt.Fprintln(stdout, version)
+		_, _ = fmt.Fprintln(stdout, version)
 		return 0
 	case "help", "-h", "--help":
-		fmt.Fprint(stdout, usage)
+		_, _ = fmt.Fprint(stdout, usage)
 		return 0
 	case "doctor":
 		return in.doctor(rest)
@@ -107,7 +107,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "pause", "resume", "kill":
 		return in.lifecycle(command, rest)
 	default:
-		fmt.Fprintf(stderr, "sandboxctl: unknown command %q\n\n%s", command, usage)
+		_, _ = fmt.Fprintf(stderr, "sandboxctl: unknown command %q\n\n%s", command, usage)
 		return 2
 	}
 }
@@ -120,7 +120,7 @@ type globals struct {
 }
 
 // parse reads global flags up to the command name (or "--").
-func (g *globals) parse(args []string, stdout, stderr io.Writer) (int, bool) {
+func (g *globals) parse(args []string, _, stderr io.Writer) (int, bool) {
 	fs := flag.NewFlagSet("sandboxctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&g.domain, "domain", "", "server base URL (default $SANDBOX_DOMAIN)")
@@ -157,9 +157,9 @@ func contextWithSignals() (context.Context, context.CancelFunc) {
 // fail prints an error the way the contract specifies and returns the exit
 // code for it.
 func (in *invocation) fail(err error) int {
-	fmt.Fprintf(in.stderr, "sandboxctl: %s\n", messageOf(err))
+	_, _ = fmt.Fprintf(in.stderr, "sandboxctl: %s\n", messageOf(err))
 	if hint := hintFor(err); hint != "" {
-		fmt.Fprintf(in.stderr, "hint: %s\n", hint)
+		_, _ = fmt.Fprintf(in.stderr, "hint: %s\n", hint)
 	}
 	return exitCode(err)
 }
@@ -237,7 +237,7 @@ func isConnectionRefused(err error) bool {
 // printSandbox writes the stable one-line form used by list and lifecycle
 // commands.
 func (in *invocation) printSandbox(sb *sandbox.Sandbox) {
-	fmt.Fprintf(in.stdout, "%s %s %s %s\n", sb.ID, sb.State, sb.Image,
+	_, _ = fmt.Fprintf(in.stdout, "%s %s %s %s\n", sb.ID, sb.State, sb.Image,
 		sb.CreatedAt.UTC().Format(time.RFC3339))
 }
 
@@ -254,7 +254,7 @@ func (in *invocation) printExecutionStatus(ex *sandbox.Execution) {
 	if ex.ExitCode != nil {
 		exit = fmt.Sprintf("%d", *ex.ExitCode)
 	}
-	fmt.Fprintf(in.stderr, "execution %s: %s (%s), exit %s\n", ex.ID, ex.State, reason, exit)
+	_, _ = fmt.Fprintf(in.stderr, "execution %s: %s (%s), exit %s\n", ex.ID, ex.State, reason, exit)
 }
 
 // ---------------------------------------------------------------- helpers
@@ -311,7 +311,7 @@ func healthProbe(ctx context.Context, domain string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("healthz answered %d", resp.StatusCode)

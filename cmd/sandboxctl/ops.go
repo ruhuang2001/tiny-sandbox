@@ -12,7 +12,7 @@ import (
 func (in *invocation) attach(args []string) int {
 	positional, flags := splitArgs(args)
 	if len(flags) > 0 || len(positional) != 2 {
-		fmt.Fprintln(in.stderr, "usage: sandboxctl attach SANDBOX EXECUTION")
+		_, _ = fmt.Fprintln(in.stderr, "usage: sandboxctl attach SANDBOX EXECUTION")
 		return 2
 	}
 	client, err := in.client()
@@ -42,7 +42,7 @@ func (in *invocation) attach(args []string) int {
 func (in *invocation) logs(args []string) int {
 	positional, flags := splitArgs(args)
 	if len(flags) > 0 || len(positional) != 2 {
-		fmt.Fprintln(in.stderr, "usage: sandboxctl logs SANDBOX EXECUTION")
+		_, _ = fmt.Fprintln(in.stderr, "usage: sandboxctl logs SANDBOX EXECUTION")
 		return 2
 	}
 	client, err := in.client()
@@ -70,7 +70,7 @@ func (in *invocation) logs(args []string) int {
 func (in *invocation) inspect(args []string) int {
 	positional, flags := splitArgs(args)
 	if len(flags) > 0 || len(positional) != 1 {
-		fmt.Fprintln(in.stderr, "usage: sandboxctl inspect SANDBOX")
+		_, _ = fmt.Fprintln(in.stderr, "usage: sandboxctl inspect SANDBOX")
 		return 2
 	}
 	client, err := in.client()
@@ -81,24 +81,24 @@ func (in *invocation) inspect(args []string) int {
 	if err != nil {
 		return in.fail(err)
 	}
-	fmt.Fprintf(in.stdout, "id: %s\n", sb.ID)
-	fmt.Fprintf(in.stdout, "state: %s\n", sb.State)
-	fmt.Fprintf(in.stdout, "image: %s\n", sb.Image)
-	fmt.Fprintf(in.stdout, "memory_mb: %d\n", sb.MemoryMB)
-	fmt.Fprintf(in.stdout, "timeout_seconds: %d\n", sb.TimeoutSeconds)
-	fmt.Fprintf(in.stdout, "timeout_action: %s\n", sb.TimeoutAction)
-	fmt.Fprintf(in.stdout, "idle_timeout_seconds: %d\n", sb.IdleTimeoutSeconds)
-	fmt.Fprintf(in.stdout, "idle_timeout_action: %s\n", sb.IdleTimeoutAction)
-	fmt.Fprintf(in.stdout, "created_at: %s\n", sb.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"))
+	_, _ = fmt.Fprintf(in.stdout, "id: %s\n", sb.ID)
+	_, _ = fmt.Fprintf(in.stdout, "state: %s\n", sb.State)
+	_, _ = fmt.Fprintf(in.stdout, "image: %s\n", sb.Image)
+	_, _ = fmt.Fprintf(in.stdout, "memory_mb: %d\n", sb.MemoryMB)
+	_, _ = fmt.Fprintf(in.stdout, "timeout_seconds: %d\n", sb.TimeoutSeconds)
+	_, _ = fmt.Fprintf(in.stdout, "timeout_action: %s\n", sb.TimeoutAction)
+	_, _ = fmt.Fprintf(in.stdout, "idle_timeout_seconds: %d\n", sb.IdleTimeoutSeconds)
+	_, _ = fmt.Fprintf(in.stdout, "idle_timeout_action: %s\n", sb.IdleTimeoutAction)
+	_, _ = fmt.Fprintf(in.stdout, "created_at: %s\n", sb.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"))
 	if sb.ExpiresAt != nil {
-		fmt.Fprintf(in.stdout, "expires_at: %s\n", sb.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z"))
+		_, _ = fmt.Fprintf(in.stdout, "expires_at: %s\n", sb.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z"))
 	} else {
-		fmt.Fprintln(in.stdout, "expires_at: null")
+		_, _ = fmt.Fprintln(in.stdout, "expires_at: null")
 	}
 	if sb.KillReason != nil {
-		fmt.Fprintf(in.stdout, "kill_reason: %s\n", *sb.KillReason)
+		_, _ = fmt.Fprintf(in.stdout, "kill_reason: %s\n", *sb.KillReason)
 	} else {
-		fmt.Fprintln(in.stdout, "kill_reason: null")
+		_, _ = fmt.Fprintln(in.stdout, "kill_reason: null")
 	}
 	return 0
 }
@@ -107,7 +107,7 @@ func (in *invocation) inspect(args []string) int {
 // line format.
 func (in *invocation) list(args []string) int {
 	if len(args) > 0 {
-		fmt.Fprintln(in.stderr, "usage: sandboxctl list")
+		_, _ = fmt.Fprintln(in.stderr, "usage: sandboxctl list")
 		return 2
 	}
 	client, err := in.client()
@@ -128,7 +128,7 @@ func (in *invocation) list(args []string) int {
 func (in *invocation) lifecycle(command string, args []string) int {
 	positional, flags := splitArgs(args)
 	if len(flags) > 0 || len(positional) != 1 {
-		fmt.Fprintf(in.stderr, "usage: sandboxctl %s SANDBOX\n", command)
+		_, _ = fmt.Fprintf(in.stderr, "usage: sandboxctl %s SANDBOX\n", command)
 		return 2
 	}
 	client, err := in.client()
@@ -165,7 +165,7 @@ func (in *invocation) writeEvent(ev sandbox.Event) error {
 		_, err := io.WriteString(in.stderr, ev.Data)
 		return err
 	case sandbox.EventTruncated:
-		fmt.Fprintf(in.stderr, "sandboxctl: output truncated at %d bytes\n", ev.LimitBytes)
+		_, _ = fmt.Fprintf(in.stderr, "sandboxctl: output truncated at %d bytes\n", ev.LimitBytes)
 		return nil
 	}
 	return nil

@@ -22,7 +22,7 @@ type scripted struct {
 	oomSet    bool
 }
 
-func (s *scripted) Liveness(ctx context.Context, id string) (daemon.Liveness, error) {
+func (s *scripted) Liveness(_ context.Context, _ string) (daemon.Liveness, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	answer := s.answers[len(s.answers)-1]

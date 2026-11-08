@@ -80,18 +80,6 @@ func (f *fakeServer) count(method, path string) int {
 	return n
 }
 
-// last returns the most recent matching request.
-func (f *fakeServer) last(method, path string) (recordedRequest, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for i := len(f.requests) - 1; i >= 0; i-- {
-		if f.requests[i].method == method && f.requests[i].path == path {
-			return f.requests[i], true
-		}
-	}
-	return recordedRequest{}, false
-}
-
 // client returns an SDK client pointed at the fake with no retry jitter delay.
 func (f *fakeServer) client(t *testing.T, maxRetries int) *Client {
 	t.Helper()
@@ -206,7 +194,7 @@ func TestStreamReconnectsFromLastEventID(t *testing.T) {
 
 func TestStreamCallbackErrorStopsWithoutCancel(t *testing.T) {
 	f := newFakeServer(t)
-	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, sseFrame(1, EventStdout, `{"data":"x"}`))

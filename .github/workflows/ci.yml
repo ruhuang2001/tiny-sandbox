@@ -23,6 +23,8 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.15.0
+      - name: vet
+        run: go vet ./...
 
   test:
     runs-on: ubuntu-latest
@@ -32,10 +34,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: vet
-        run: go vet ./...
-      - name: test (race + coverage)
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: unit and contract tests (race, coverage)
+        run: |
+          mkdir -p "$RUNNER_TEMP/cov-unit"
+          go test -race -covermode=atomic -coverpkg=./... ./... \
+            -args -test.gocoverdir="$RUNNER_TEMP/cov-unit"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: ${{ runner.temp }}/cov-unit
+          retention-days: 3
 
   build:
     runs-on: ubuntu-latest
@@ -55,3 +63,51 @@ jobs:
         with:
           version: '~> v2'
           args: check
+      - name: release snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --snapshot --clean
+      - name: verify checksums and archive count
+        run: |
+          cd dist
+          sha256sum -c --quiet checksums.txt
+          count=$(ls -1 tiny-sandbox_*_*.tar.gz tiny-sandbox_*_*.zip 2>/dev/null | wc -l | tr -d ' ')
+          echo "archives: $count"
+          test "$count" -eq 6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-snapshot
+          path: dist/
+          retention-days: 3
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: end-to-end suite with coverage
+        env:
+          E2E_COVERAGE: "1"
+        run: bash scripts/e2e.sh artifacts/e2e
+      - name: merge coverage and enforce the gate
+        run: |
+          mkdir -p "$RUNNER_TEMP/cov-unit"
+          go test -race -covermode=atomic -coverpkg=./... ./... \
+            -args -test.gocoverdir="$RUNNER_TEMP/cov-unit"
+          bash scripts/coverage.sh "$RUNNER_TEMP/cov-unit" artifacts/e2e/coverage 70
+      - name: no containers remain
+        run: |
+          remaining=$(docker ps -aq --filter 'label=tiny-sandbox.owner' | wc -l | tr -d ' ')
+          echo "containers remaining: $remaining"
+          test "$remaining" -eq 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-artifacts
+          path: artifacts/
+          retention-days: 7

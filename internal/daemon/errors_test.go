@@ -149,7 +149,7 @@ func TestConcurrentOperations(t *testing.T) {
 	const workers = 8
 	done := make(chan struct{}, workers)
 	for i := 0; i < workers; i++ {
-		go func(i int) {
+		go func(_ int) {
 			defer func() { done <- struct{}{} }()
 			for j := 0; j < 40; j++ {
 				sb, err := h.s.Create(ctx, daemon.CreateRequest{TimeoutSeconds: ptr(0)})

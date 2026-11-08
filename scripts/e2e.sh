@@ -17,6 +17,7 @@ export SANDBOX_DOMAIN="http://127.0.0.1:$PORT"
 unset SANDBOX_API_KEY || true
 
 BIN=$ROOT/bin
+COVER_DIR=$OUT/coverage
 SERVER_LOG=$OUT/sandboxd.log
 RESULTS=$OUT/results.txt
 : >"$RESULTS"
@@ -54,11 +55,31 @@ note() { printf '\n== %s ==\n' "$1" | tee -a "$RESULTS"; }
 # ---------------------------------------------------------------- build
 
 note "build"
-(cd "$ROOT" && make build) >"$OUT/build.txt" 2>&1 || {
-  echo "build failed; see $OUT/build.txt" | tee -a "$RESULTS"
-  exit 1
-}
-pass "binaries built"
+if [ "${E2E_COVERAGE:-0}" = "1" ]; then
+  # Instrument the binaries so the end-to-end run contributes coverage for
+  # the packages only it reaches: the Docker backend's real paths and the
+  # CLI's process-level behaviour.
+  mkdir -p "$COVER_DIR"
+  BIN=$OUT/bin
+  mkdir -p "$BIN"
+  {
+    # -covermode=atomic matches the unit run, so both profiles merge into
+    # one covdata set; a mode clash is a merge error, not a warning.
+    (cd "$ROOT" && go build -cover -covermode=atomic -coverpkg=./... -o "$BIN/sandboxd" ./cmd/sandboxd) &&
+    (cd "$ROOT" && go build -cover -covermode=atomic -coverpkg=./... -o "$BIN/sandboxctl" ./cmd/sandboxctl)
+  } >"$OUT/build.txt" 2>&1 || {
+    echo "instrumented build failed; see $OUT/build.txt" | tee -a "$RESULTS"
+    exit 1
+  }
+  export GOCOVERDIR="$COVER_DIR"
+  pass "instrumented binaries built"
+else
+  (cd "$ROOT" && make build) >"$OUT/build.txt" 2>&1 || {
+    echo "build failed; see $OUT/build.txt" | tee -a "$RESULTS"
+    exit 1
+  }
+  pass "binaries built"
+fi
 
 # ---------------------------------------------------------------- server
 

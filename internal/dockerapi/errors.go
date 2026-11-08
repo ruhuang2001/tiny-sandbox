@@ -49,3 +49,5 @@ func IsConflict(err error) bool {
 	var se *StatusError
 	return errors.As(err, &se) && se.Status == http.StatusConflict
 }
+
+

@@ -9,3 +9,6 @@
 # Test and end-to-end evidence is regenerated, not committed.
 /coverage.out
 /artifacts/
+
+# Release snapshot output.
+/dist/

@@ -113,9 +113,6 @@ func (h *harness) waitCompleted(sandboxID, executionID string) daemon.Execution 
 	return daemon.Execution{}
 }
 
-func isCode(err error, code daemon.Code) bool {
-	return daemon.CodeOf(err) == code
-}
 
 // memEcho prints its arguments, one per line.
 func memEcho(_ context.Context, args []string) (string, string, int) {

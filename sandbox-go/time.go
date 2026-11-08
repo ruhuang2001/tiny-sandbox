@@ -32,7 +32,7 @@ func (t *Time) UnmarshalJSON(data []byte) error {
 
 // MarshalJSON writes an RFC 3339 UTC string.
 func (t Time) MarshalJSON() ([]byte, error) {
-	if t.Time.IsZero() {
+	if t.IsZero() {
 		return []byte("null"), nil
 	}
 	return json.Marshal(t.UTC().Format(time.RFC3339Nano))

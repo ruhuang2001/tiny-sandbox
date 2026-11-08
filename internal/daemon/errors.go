@@ -8,6 +8,7 @@ import (
 // Code is one of the error codes from the HTTP contract in docs/api.md.
 type Code string
 
+// Error codes from the HTTP contract in docs/api.md.
 const (
 	CodeInvalidRequest      Code = "invalid_request"
 	CodeUnauthorized        Code = "unauthorized"

@@ -44,7 +44,7 @@ func (in *invocation) runCommand(args []string) int {
 	command = append(command, fs.Args()...)
 
 	if len(command) == 0 {
-		fmt.Fprintln(in.stderr, "sandboxctl: run needs a command, e.g. sandboxctl run -- ls -l")
+		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: run needs a command, e.g. sandboxctl run -- ls -l")
 		return 2
 	}
 
@@ -52,7 +52,7 @@ func (in *invocation) runCommand(args []string) int {
 	// it needs a Python image, unless one was asked for.
 	if command[0] == "code" {
 		if len(command) != 2 {
-			fmt.Fprintln(in.stderr, "sandboxctl: code takes exactly one argument: the Python program")
+			_, _ = fmt.Fprintln(in.stderr, "sandboxctl: code takes exactly one argument: the Python program")
 			return 2
 		}
 		command = []string{"python3", "-c", command[1]}
@@ -81,19 +81,19 @@ func (in *invocation) runCommand(args []string) int {
 		}
 		created = true
 		sandboxID = sb.ID
-		fmt.Fprintf(in.stderr, "sandbox: %s (created; remove with: sandboxctl kill %s)\n", sb.ID, sb.ID)
+		_, _ = fmt.Fprintf(in.stderr, "sandbox: %s (created; remove with: sandboxctl kill %s)\n", sb.ID, sb.ID)
 	} else {
 		if err := checkNoCreationFlags(rf); err != nil {
 			return in.fail(err)
 		}
-		fmt.Fprintf(in.stderr, "sandbox: %s\n", sandboxID)
+		_, _ = fmt.Fprintf(in.stderr, "sandbox: %s\n", sandboxID)
 	}
 
 	started, err := client.StartExecution(ctx, sandboxID, sandbox.ExecuteRequest{Command: command})
 	if err != nil {
 		return in.startFailed(client, sandboxID, created, rf.remove, err)
 	}
-	fmt.Fprintf(in.stderr, "execution: %s\n", started.ID)
+	_, _ = fmt.Fprintf(in.stderr, "execution: %s\n", started.ID)
 
 	final, streamErr := client.StreamExecution(ctx, sandboxID, started.ID, func(ev sandbox.Event) error {
 		switch ev.Type {

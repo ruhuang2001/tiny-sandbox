@@ -248,7 +248,7 @@ func (b *Backend) ReadFile(ctx context.Context, containerID, path string) ([]byt
 	if err != nil {
 		return nil, notFound(err, "%s", path)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	data, err := dockerapi.ExtractFile(rc)
 	if err != nil {
 		return nil, fmt.Errorf("dockerbackend: read %s: %w", path, err)
@@ -285,7 +285,7 @@ func (b *Backend) capture(ctx context.Context, containerID string, command []str
 	if err != nil {
 		return nil, err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var stdout, stderr bytes.Buffer
 	if err := dockerapi.Demux(stream, &stdout, &stderr); err != nil {

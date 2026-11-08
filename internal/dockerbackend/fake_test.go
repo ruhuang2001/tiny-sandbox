@@ -3,6 +3,7 @@ package dockerbackend
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -77,7 +78,8 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := path.Join(dir, "d.sock")
-	ln, err := net.Listen("unix", sock)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -323,13 +325,13 @@ func (f *fakeDaemon) execCreate(w http.ResponseWriter, r *http.Request, containe
 		containerID: containerID,
 		command:     cfg.Cmd,
 	}
-	real := cfg.Cmd
+	actual := cfg.Cmd
 	if pidPath, realCmd, wrapped := unwrap(cfg.Cmd); wrapped {
 		c.files[pidPath] = []byte("4242\n")
 		ex.command = realCmd
-		real = realCmd
+		actual = realCmd
 	}
-	ex.stdout, ex.stderr, ex.exitCode = f.programLocked(containerID, c, real)
+	ex.stdout, ex.stderr, ex.exitCode = f.programLocked(containerID, c, actual)
 	f.execs[ex.id] = ex
 	f.execCommands = append(f.execCommands, cfg.Cmd)
 	writeJSON(w, 201, map[string]string{"Id": ex.id})
@@ -466,20 +468,11 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 // unwrap recognizes the PID-file wrapper and returns the PID file path and the
 // real command.
-func unwrap(cmd []string) (pidPath string, real []string, ok bool) {
+func unwrap(cmd []string) (pidPath string, actual []string, ok bool) {
 	if len(cmd) < 5 || cmd[0] != "/bin/sh" || cmd[1] != "-c" || cmd[2] != execWrapper {
 		return "", nil, false
 	}
 	return cmd[3], cmd[4:], true
-}
-
-// setFile seeds a file in a container, for archive tests.
-func (f *fakeDaemon) setFile(containerID, path string, data []byte) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if c := f.containers[containerID]; c != nil {
-		c.files[path] = data
-	}
 }
 
 // file returns a container's stored file.
@@ -500,13 +493,6 @@ func (f *fakeDaemon) lastExecCommand() []string {
 		return nil
 	}
 	return f.execCommands[len(f.execCommands)-1]
-}
-
-// countExecCommands returns how many execs of a shape were created.
-func (f *fakeDaemon) countExecCommands() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.execCommands)
 }
 
 // removedContainers returns every removed container ID.

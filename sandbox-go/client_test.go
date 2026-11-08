@@ -61,7 +61,7 @@ func TestRetryBoundaries(t *testing.T) {
 func TestGetRetriesThenSucceeds(t *testing.T) {
 	f := newFakeServer(t)
 	var calls atomic.Int32
-	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) < 3 {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "try later")
 			return
@@ -84,7 +84,7 @@ func TestGetRetriesThenSucceeds(t *testing.T) {
 
 func TestGetStopsAtRetryLimit(t *testing.T) {
 	f := newFakeServer(t)
-	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "down")
 	})
 
@@ -105,7 +105,7 @@ func TestGetStopsAtRetryLimit(t *testing.T) {
 
 func TestNonRetryableErrorIsAttemptedOnce(t *testing.T) {
 	f := newFakeServer(t)
-	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "not_found", "no such sandbox")
 	})
 
@@ -123,7 +123,7 @@ func TestNonRetryableErrorIsAttemptedOnce(t *testing.T) {
 // container.
 func TestCreateIsAttemptedExactlyOnce(t *testing.T) {
 	f := newFakeServer(t)
-	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "down")
 	})
 
@@ -142,7 +142,7 @@ func TestCreateIsAttemptedExactlyOnce(t *testing.T) {
 func TestStartCarriesIdempotencyKey(t *testing.T) {
 	f := newFakeServer(t)
 	var calls atomic.Int32
-	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) == 1 {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "down")
 			return
@@ -176,7 +176,7 @@ func TestStartCarriesIdempotencyKey(t *testing.T) {
 
 func TestContextDoneStopsRetrying(t *testing.T) {
 	f := newFakeServer(t)
-	f.setHandler(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "down")
 	})
 

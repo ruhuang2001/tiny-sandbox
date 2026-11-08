@@ -2,7 +2,6 @@ package dockerbackend
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -112,4 +111,3 @@ func (p *process) pid(limit time.Duration) (string, error) {
 	}
 }
 
-func isNotFound(err error) bool { return errors.Is(err, daemon.ErrNotFound) }

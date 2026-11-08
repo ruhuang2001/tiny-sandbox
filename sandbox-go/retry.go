@@ -165,7 +165,7 @@ func (c *Client) once(ctx context.Context, req request) (*response, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	data, err := io.ReadAll(httpResp.Body)
 	if err != nil {

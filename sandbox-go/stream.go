@@ -83,7 +83,7 @@ func (c *Client) streamOnce(ctx context.Context, sandboxID, executionID string, 
 	if err != nil {
 		return nil, false, &Error{Code: "transport", Message: "sandbox: stream failed", Cause: err}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -292,7 +292,7 @@ func parseEvent(event *Event, data string) (*Event, error) {
 // parseExecution decodes an Execution payload.
 func parseExecution(data []byte) (*Execution, error) {
 	var ex Execution
-	if err := json.Unmarshal([]byte(data), &ex); err != nil {
+	if err := json.Unmarshal(data, &ex); err != nil {
 		return nil, &Error{Code: "stream", Message: "sandbox: could not parse the complete event", Cause: err}
 	}
 	return &ex, nil

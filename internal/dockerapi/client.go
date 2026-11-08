@@ -258,8 +258,9 @@ func (c *Client) ArchivePut(ctx context.Context, containerID, path string, tarBo
 	if err != nil {
 		return err
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.Copy(io.Discard, resp.Body)
+	return err
 }
 
 // ---------------------------------------------------------------- transport
@@ -287,7 +288,7 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	if resp.StatusCode < 300 {
 		return resp, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return nil, statusError(resp)
 }
 
@@ -308,8 +309,9 @@ func (c *Client) send(ctx context.Context, method, p string, q url.Values, body 
 	if err != nil {
 		return err
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.Copy(io.Discard, resp.Body)
+	return err
 }
 
 func (c *Client) getJSON(ctx context.Context, p string, out any) error {
@@ -325,7 +327,7 @@ func (c *Client) getJSONQuery(ctx context.Context, p string, q url.Values, out a
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("dockerapi: decode %s: %w", p, err)
 	}
@@ -346,7 +348,7 @@ func (c *Client) postJSON(ctx context.Context, p string, q url.Values, in, out a
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil

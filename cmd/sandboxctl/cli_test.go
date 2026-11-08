@@ -1,3 +1,4 @@
+// Package main's tests run the CLI against the real HTTP handler.
 package main
 
 import (
@@ -154,7 +155,7 @@ func TestRunExitCodesAndHints(t *testing.T) {
 
 func TestRunOOMAndTimeoutHints(t *testing.T) {
 	h := newCLIHarness(t)
-	h.be.Streamers["oom"] = func(ctx context.Context, write func([]byte, []byte) error) int {
+	h.be.Streamers["oom"] = func(_ context.Context, _ func([]byte, []byte) error) int {
 		// The engine classifies oom from the cgroup delta; drive it through
 		// the backend's OOM counter instead of the exit code.
 		return 137

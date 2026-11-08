@@ -59,7 +59,6 @@ type container struct {
 	oom    int64
 	files  map[string][]byte
 	proc   *process
-	paused bool
 }
 
 type process struct {

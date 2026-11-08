@@ -7,6 +7,7 @@ package sandbox
 // State is a sandbox lifecycle state.
 type State string
 
+// States, as api.md defines them.
 const (
 	StatePending State = "pending"
 	StateRunning State = "running"
@@ -17,6 +18,7 @@ const (
 // KillReason explains why a sandbox was killed.
 type KillReason string
 
+// Kill reasons, as api.md defines them.
 const (
 	KillRequested   KillReason = "requested"
 	KillTimeout     KillReason = "timeout"
@@ -27,6 +29,7 @@ const (
 // Action is what a timeout does when it fires.
 type Action string
 
+// Actions a timeout can take.
 const (
 	ActionKill  Action = "kill"
 	ActionPause Action = "pause"
@@ -35,6 +38,7 @@ const (
 // Reason is an execution termination reason.
 type Reason string
 
+// Termination reasons, as api.md defines them.
 const (
 	ReasonCanceled Reason = "canceled"
 	ReasonTimeout  Reason = "timeout"
@@ -93,6 +97,7 @@ type ExecuteRequest struct {
 // EventType is an SSE event type.
 type EventType string
 
+// Event types carried by an execution stream.
 const (
 	EventStdout    EventType = "stdout"
 	EventStderr    EventType = "stderr"

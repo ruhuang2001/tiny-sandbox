@@ -30,6 +30,7 @@ const (
 // State is a sandbox lifecycle state: pending, running, paused, or killed.
 type State string
 
+// States, as api.md defines them.
 const (
 	StatePending State = "pending"
 	StateRunning State = "running"
@@ -40,6 +41,7 @@ const (
 // KillReason explains why a sandbox reached StateKilled. It is terminal.
 type KillReason string
 
+// Kill reasons, as api.md defines them.
 const (
 	KillRequested   KillReason = "requested"
 	KillTimeout     KillReason = "timeout"
@@ -50,6 +52,7 @@ const (
 // Action is what a timeout does when it fires. Only kill and pause exist.
 type Action string
 
+// Actions a timeout can take.
 const (
 	ActionKill  Action = "kill"
 	ActionPause Action = "pause"
@@ -60,6 +63,7 @@ const (
 // alone never implies oom.
 type Reason string
 
+// Termination reasons, in the precedence order of api.md.
 const (
 	ReasonCanceled Reason = "canceled"
 	ReasonTimeout  Reason = "timeout"
@@ -71,6 +75,7 @@ const (
 // ExecState is an execution state: running or completed.
 type ExecState string
 
+// Execution states.
 const (
 	ExecRunning   ExecState = "running"
 	ExecCompleted ExecState = "completed"

@@ -164,15 +164,15 @@ func TestExecRunsWrappedCommandAndDemuxes(t *testing.T) {
 	}
 
 	cmd := f.lastExecCommand()
-	pidPath, real, ok := unwrap(cmd)
+	pidPath, actual, ok := unwrap(cmd)
 	if !ok {
 		t.Fatalf("command was not wrapped: %v", cmd)
 	}
 	if !strings.HasPrefix(pidPath, PidDir+"/") {
 		t.Errorf("pid file %q is outside %s", pidPath, PidDir)
 	}
-	if strings.Join(real, " ") != "python3 -c print(1)" {
-		t.Errorf("real command = %v", real)
+	if strings.Join(actual, " ") != "python3 -c print(1)" {
+		t.Errorf("real command = %v", actual)
 	}
 }
 
@@ -368,16 +368,13 @@ func TestRemoveMissingContainerIsNotFound(t *testing.T) {
 func TestRemoveOwnedRemovesOnlyItsLabel(t *testing.T) {
 	f := newFakeDaemon(t)
 	b := f.backend(t)
-	ours := []string{}
 	for range 2 {
-		id, err := b.Create(context.Background(), daemon.ContainerSpec{
+		if _, err := b.Create(context.Background(), daemon.ContainerSpec{
 			Image: "alpine:3.20", MemoryMB: 64,
 			Labels: map[string]string{daemon.OwnerLabelKey: "127.0.0.1:8080"},
-		})
-		if err != nil {
+		}); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		ours = append(ours, id)
 	}
 	if _, err := b.Create(context.Background(), daemon.ContainerSpec{
 		Image: "alpine:3.20", MemoryMB: 64,

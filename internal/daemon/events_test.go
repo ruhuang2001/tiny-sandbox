@@ -185,7 +185,7 @@ func TestTruncation(t *testing.T) {
 	t.Run("byte limit", func(t *testing.T) {
 		h := newHarness(t)
 		sb := h.create(daemon.CreateRequest{})
-		h.be.Streamers["spew"] = func(ctx context.Context, write func([]byte, []byte) error) int {
+		h.be.Streamers["spew"] = func(_ context.Context, write func([]byte, []byte) error) int {
 			chunk := make([]byte, 32<<10)
 			for i := range chunk {
 				chunk[i] = 'x'
@@ -237,7 +237,7 @@ func TestTruncation(t *testing.T) {
 	t.Run("event limit", func(t *testing.T) {
 		h := newHarness(t)
 		sb := h.create(daemon.CreateRequest{})
-		h.be.Streamers["drip"] = func(ctx context.Context, write func([]byte, []byte) error) int {
+		h.be.Streamers["drip"] = func(_ context.Context, write func([]byte, []byte) error) int {
 			for i := 0; i < daemon.MaxOutputEvents+100; i++ {
 				if err := write([]byte("x"), nil); err != nil {
 					return 1
@@ -274,7 +274,7 @@ func TestTruncation(t *testing.T) {
 	t.Run("stderr counts against the same budget", func(t *testing.T) {
 		h := newHarness(t)
 		sb := h.create(daemon.CreateRequest{})
-		h.be.Streamers["spew"] = func(ctx context.Context, write func([]byte, []byte) error) int {
+		h.be.Streamers["spew"] = func(_ context.Context, write func([]byte, []byte) error) int {
 			chunk := make([]byte, 32<<10)
 			for i := 0; i < 16; i++ {
 				if err := write(chunk, nil); err != nil {

@@ -91,11 +91,6 @@ func (e *Error) Retryable() bool {
 	return e.StatusCode == 0 && e.Code == "transport"
 }
 
-// apiError builds an error from a contract error body.
-func apiError(status int, code, message string) *Error {
-	return &Error{StatusCode: status, Code: code, Message: message}
-}
-
 // outcomeError turns a completed execution into an error, or nil when it
 // exited 0. The Execution is always attached so no output is lost.
 func outcomeError(ex *Execution) error {

@@ -9,6 +9,8 @@ import (
 // contract mentions exist: SIGTERM starts a cancellation, SIGKILL finishes it.
 type Signal int
 
+// The two signals the daemon sends: SIGTERM starts a cancellation, SIGKILL
+// finishes it.
 const (
 	SignalTerm Signal = iota + 1
 	SignalKill

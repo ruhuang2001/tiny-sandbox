@@ -17,7 +17,7 @@ import (
 // Ready or the hints for whatever failed.
 func (in *invocation) doctor(args []string) int {
 	if len(args) > 0 {
-		fmt.Fprintln(in.stderr, "usage: sandboxctl doctor")
+		_, _ = fmt.Fprintln(in.stderr, "usage: sandboxctl doctor")
 		return 2
 	}
 
@@ -28,13 +28,13 @@ func (in *invocation) doctor(args []string) int {
 	report := func(name string, err error, detail string) {
 		if err == nil {
 			if detail != "" {
-				fmt.Fprintf(in.stdout, "%s: ok (%s)\n", name, detail)
+				_, _ = fmt.Fprintf(in.stdout, "%s: ok (%s)\n", name, detail)
 			} else {
-				fmt.Fprintf(in.stdout, "%s: ok\n", name)
+				_, _ = fmt.Fprintf(in.stdout, "%s: ok\n", name)
 			}
 			return
 		}
-		fmt.Fprintf(in.stdout, "%s: fail (%s)\n", name, messageOf(err))
+		_, _ = fmt.Fprintf(in.stdout, "%s: fail (%s)\n", name, messageOf(err))
 		failed = append(failed, err)
 	}
 
@@ -75,7 +75,7 @@ func (in *invocation) doctor(args []string) int {
 	if isLocalDomain(domain) {
 		report("docker", checkDocker(), "")
 	} else {
-		fmt.Fprintf(in.stdout, "docker: skipped (remote domain)\n")
+		_, _ = fmt.Fprintf(in.stdout, "docker: skipped (remote domain)\n")
 	}
 
 	// 5. sandbox: create, run, verify, kill.
@@ -87,10 +87,10 @@ func (in *invocation) doctor(args []string) int {
 // checksFailed prints Ready or the hints and returns the exit code.
 func checksFailed(stdout, stderr io.Writer, failed []error) int {
 	if len(failed) == 0 {
-		fmt.Fprintln(stdout, "Ready")
+		_, _ = fmt.Fprintln(stdout, "Ready")
 		return 0
 	}
-	fmt.Fprintln(stdout, "not ready")
+	_, _ = fmt.Fprintln(stdout, "not ready")
 	seen := make(map[string]bool)
 	for _, err := range failed {
 		hint := hintFor(err)
@@ -98,7 +98,7 @@ func checksFailed(stdout, stderr io.Writer, failed []error) int {
 			continue
 		}
 		seen[hint] = true
-		fmt.Fprintf(stderr, "hint: %s\n", hint)
+		_, _ = fmt.Fprintf(stderr, "hint: %s\n", hint)
 	}
 	return 1
 }
