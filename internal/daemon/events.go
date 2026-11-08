@@ -138,7 +138,11 @@ func (l *eventLog) eventsAfterLocked(after uint64) ([]Event, bool) {
 		i = len(l.events)
 	}
 	events := append([]Event(nil), l.events[i:]...)
-	return events, l.complete && i >= len(l.events)
+	// done means "the complete event was delivered in this batch": the log is
+	// complete and this batch runs to the end of it. Returning done only when
+	// nothing remained would make the handler wait one ping interval after
+	// delivering the final event.
+	return events, l.complete && i+len(events) >= len(l.events)
 }
 
 // wait returns events after after, blocking until at least one is available,

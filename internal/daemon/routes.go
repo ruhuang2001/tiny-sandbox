@@ -15,37 +15,28 @@ type Route struct {
 
 // Routes returns the endpoints the server registers. Stage 0 freezes the
 // contract: every operation in api/openapi.yaml has a route here, and a test
-// fails if the two sets differ in either direction. Handler bodies are filled
-// in by the stages that own them; until then they answer 503.
+// fails if the two sets differ in either direction. A nil Handle means the
+// store-backed Handler serves the operation; only /healthz carries its own.
 func Routes(version string) []Route {
 	return []Route{
 		{http.MethodGet, "/healthz", handleHealth(version)},
 
-		{http.MethodPost, "/v1/sandboxes", notImplemented},
-		{http.MethodGet, "/v1/sandboxes", notImplemented},
-		{http.MethodGet, "/v1/sandboxes/{sandbox_id}", notImplemented},
-		{http.MethodDelete, "/v1/sandboxes/{sandbox_id}", notImplemented},
-		{http.MethodPost, "/v1/sandboxes/{sandbox_id}/pause", notImplemented},
-		{http.MethodPost, "/v1/sandboxes/{sandbox_id}/resume", notImplemented},
+		{http.MethodPost, "/v1/sandboxes", nil},
+		{http.MethodGet, "/v1/sandboxes", nil},
+		{http.MethodGet, "/v1/sandboxes/{sandbox_id}", nil},
+		{http.MethodDelete, "/v1/sandboxes/{sandbox_id}", nil},
+		{http.MethodPost, "/v1/sandboxes/{sandbox_id}/pause", nil},
+		{http.MethodPost, "/v1/sandboxes/{sandbox_id}/resume", nil},
 
-		{http.MethodPost, "/v1/sandboxes/{sandbox_id}/executions", notImplemented},
-		{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions", notImplemented},
-		{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}", notImplemented},
-		{http.MethodPost, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel", notImplemented},
-		{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}/events", notImplemented},
+		{http.MethodPost, "/v1/sandboxes/{sandbox_id}/executions", nil},
+		{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions", nil},
+		{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}", nil},
+		{http.MethodPost, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel", nil},
+		{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}/events", nil},
 
-		{http.MethodGet, "/v1/sandboxes/{sandbox_id}/files", notImplemented},
-		{http.MethodPut, "/v1/sandboxes/{sandbox_id}/files", notImplemented},
+		{http.MethodGet, "/v1/sandboxes/{sandbox_id}/files", nil},
+		{http.MethodPut, "/v1/sandboxes/{sandbox_id}/files", nil},
 	}
-}
-
-// NewHandler returns the server's HTTP handler.
-func NewHandler(version string) *http.ServeMux {
-	mux := http.NewServeMux()
-	for _, route := range Routes(version) {
-		mux.HandleFunc(route.Method+" "+route.Path, route.Handle)
-	}
-	return mux
 }
 
 func handleHealth(version string) http.HandlerFunc {

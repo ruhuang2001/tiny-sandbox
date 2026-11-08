@@ -10,6 +10,7 @@ import (
 
 	"github.com/ruhuang2001/tiny-sandbox/api"
 	"github.com/ruhuang2001/tiny-sandbox/internal/daemon"
+	"github.com/ruhuang2001/tiny-sandbox/internal/daemon/membackend"
 )
 
 // TestSpecMatchesAPIMD checks that api/openapi.yaml and docs/api.md describe
@@ -75,7 +76,8 @@ func TestServerRoutesMatchSpec(t *testing.T) {
 
 	routes := daemon.Routes("test-version")
 	served := make([]api.Operation, 0, len(routes))
-	mux := daemon.NewHandler("test-version")
+	be := membackend.New()
+	mux := daemon.NewHandler(daemon.New(be), "test-version")
 
 	for _, route := range routes {
 		op := api.Operation{Method: route.Method, Path: route.Path}
