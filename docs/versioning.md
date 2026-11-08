@@ -39,8 +39,15 @@ go test -race ./...
 golangci-lint run ./...
 goreleaser check
 goreleaser release --snapshot --clean
-E2E_COVERAGE=1 GOFLAGS=-race bash scripts/e2e.sh artifacts/e2e
+E2E_COVERAGE=1 bash scripts/e2e.sh artifacts/e2e
+go test -race -covermode=atomic -coverpkg=./... ./... \
+  -args -test.gocoverdir="$PWD/artifacts/cov-unit"
+bash scripts/coverage.sh artifacts/cov-unit artifacts/e2e/coverage 70
 ```
+
+The last three commands are the same ones CI runs; `coverage.sh` merges both
+profiles and fails below the gate. The e2e step needs a Docker daemon and no
+other setup.
 
 Inspect the archives in `dist/` and verify the checksum file. Do not upload anything or create a GitHub release.
 

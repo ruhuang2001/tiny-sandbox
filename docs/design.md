@@ -176,11 +176,14 @@ Recorded because earlier builds hit them, not as hypotheticals:
 
 ## Roadmap
 
-- [ ] Contract freeze: `api/openapi.yaml` matches `api.md`; the route-versus-spec test fails first, then passes
-- [ ] State machine, timeouts, and classification on the in-memory backend
-- [ ] Execution engine, bounded event log, SSE with replay, cancellation
-- [ ] Docker backend over the Engine API, cgroup reads, external-stop reconciliation
-- [ ] Go SDK: client, sandbox, exec, stream, retry, errors, files
-- [ ] CLI: doctor, run, attach, logs, inspect, list, pause, resume, kill, version
-- [ ] CI, GoReleaser, README, versioning notes
-- [ ] Interview notes mapped to evidence
+Every item below is implemented and verified; `progress.md` links the evidence
+for each stage.
+
+- [x] Contract freeze: `api/openapi.yaml` matches `api.md`; the route-versus-spec test fails first, then passes
+- [x] State machine, timeouts, and classification on the in-memory backend
+- [x] Execution engine, bounded event log, SSE with replay, cancellation
+- [x] Docker backend over the Engine API, cgroup reads, external-stop reconciliation
+- [x] Go SDK: client, sandbox, exec, stream, retry, errors, files
+- [x] CLI: doctor, run, attach, logs, inspect, list, pause, resume, kill, version
+- [x] CI, GoReleaser, README, versioning notes
+- [ ] Interview notes mapped to evidence — the notes themselves live outside this repository
