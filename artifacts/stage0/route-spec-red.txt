@@ -1,0 +1,18 @@
+--- FAIL: TestServerRoutesMatchSpec (0.00s)
+    contract_test.go:91: spec declares GET /healthz but the server registers no route for it
+    contract_test.go:91: spec declares GET /v1/sandboxes but the server registers no route for it
+    contract_test.go:91: spec declares POST /v1/sandboxes but the server registers no route for it
+    contract_test.go:91: spec declares DELETE /v1/sandboxes/{sandbox_id} but the server registers no route for it
+    contract_test.go:91: spec declares GET /v1/sandboxes/{sandbox_id} but the server registers no route for it
+    contract_test.go:91: spec declares GET /v1/sandboxes/{sandbox_id}/executions but the server registers no route for it
+    contract_test.go:91: spec declares POST /v1/sandboxes/{sandbox_id}/executions but the server registers no route for it
+    contract_test.go:91: spec declares GET /v1/sandboxes/{sandbox_id}/executions/{execution_id} but the server registers no route for it
+    contract_test.go:91: spec declares POST /v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel but the server registers no route for it
+    contract_test.go:91: spec declares GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/events but the server registers no route for it
+    contract_test.go:91: spec declares GET /v1/sandboxes/{sandbox_id}/files but the server registers no route for it
+    contract_test.go:91: spec declares PUT /v1/sandboxes/{sandbox_id}/files but the server registers no route for it
+    contract_test.go:91: spec declares POST /v1/sandboxes/{sandbox_id}/pause but the server registers no route for it
+    contract_test.go:91: spec declares POST /v1/sandboxes/{sandbox_id}/resume but the server registers no route for it
+FAIL
+FAIL	github.com/ruhuang2001/tiny-sandbox/api	0.167s
+FAIL

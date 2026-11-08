@@ -1,5 +1,7 @@
-# Local-only coding-agent prompt. Design and contracts live in docs/.
+# Local-only working notes and coding-agent prompt.
+# Design and contracts live in docs/ and are committed.
 /plan.md
+/progress.md
 
 # Build output
 /bin/

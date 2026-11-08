@@ -1,0 +1,810 @@
+openapi: 3.1.0
+info:
+  title: tiny-sandbox
+  version: 1.0.0
+  summary: Code-execution sandbox for AI agents
+  description: |
+    Normative HTTP contract for the tiny-sandbox reference server.
+    docs/api.md is the prose source of this contract; when the two disagree,
+    fix one of them in the same change.
+servers:
+  - url: http://localhost:8080
+    description: Default base URL; override with SANDBOX_DOMAIN.
+security:
+  - bearerAuth: []
+tags:
+  - name: health
+  - name: sandboxes
+  - name: executions
+  - name: files
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness probe and build version
+      description: >-
+        Reports whether the server is up and which version it runs. This is the
+        only endpoint that never requires authentication.
+      security: []
+      responses:
+        '200':
+          description: The server is up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /v1/sandboxes:
+    post:
+      tags: [sandboxes]
+      operationId: createSandbox
+      summary: Create a sandbox
+      description: >-
+        Treated as a creation request for a sandbox. Creation is synchronous:
+        the response is sent once the container is running, so pending is only
+        observable by concurrent readers. Not idempotent; clients must not
+        retry it automatically. All request fields are optional and unknown
+        fields are ignored.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSandboxRequest'
+      responses:
+        '201':
+          description: The sandbox is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '502':
+          $ref: '#/components/responses/BackendError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    get:
+      tags: [sandboxes]
+      operationId: listSandboxes
+      summary: List sandboxes
+      description: >-
+        Newest first. Killed sandboxes are included until the server restarts.
+      responses:
+        '200':
+          description: Every sandbox the server knows about.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{sandbox_id}:
+    parameters:
+      - $ref: '#/components/parameters/SandboxID'
+    get:
+      tags: [sandboxes]
+      operationId: getSandbox
+      summary: Get one sandbox
+      description: Read requests never change state.
+      responses:
+        '200':
+          description: The sandbox.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [sandboxes]
+      operationId: deleteSandbox
+      summary: Kill a sandbox
+      description: >-
+        Terminates every process in the sandbox, terminates a running execution
+        with reason canceled, and removes the container. Idempotent: deleting a
+        killed sandbox returns it unchanged.
+      responses:
+        '200':
+          description: The sandbox, in state killed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '502':
+          $ref: '#/components/responses/BackendError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{sandbox_id}/pause:
+    parameters:
+      - $ref: '#/components/parameters/SandboxID'
+    post:
+      tags: [sandboxes]
+      operationId: pauseSandbox
+      summary: Pause a sandbox
+      description: >-
+        Freezes every process in the sandbox, including a running execution.
+        Idempotent: pausing a paused sandbox returns it unchanged. Not allowed
+        while pending or killed.
+      responses:
+        '200':
+          description: The sandbox, in state paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '502':
+          $ref: '#/components/responses/BackendError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{sandbox_id}/resume:
+    parameters:
+      - $ref: '#/components/parameters/SandboxID'
+    post:
+      tags: [sandboxes]
+      operationId: resumeSandbox
+      summary: Resume a sandbox
+      description: >-
+        Idempotent: resuming a running sandbox returns it unchanged. Not
+        allowed while pending or killed.
+      responses:
+        '200':
+          description: The sandbox, in state running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '502':
+          $ref: '#/components/responses/BackendError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{sandbox_id}/executions:
+    parameters:
+      - $ref: '#/components/parameters/SandboxID'
+    post:
+      tags: [executions]
+      operationId: startExecution
+      summary: Start an execution
+      description: >-
+        Runs argv without a shell. One execution runs per sandbox; an
+        overlapping start returns 409 busy, which keeps container-wide OOM
+        evidence attributable to a single execution. Starting in a paused
+        sandbox resumes it first. An execution whose command or idempotency key
+        is reused is returned instead of started again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteRequest'
+      responses:
+        '201':
+          description: A new execution, in state running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '200':
+          description: The existing execution for a reused idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '502':
+          $ref: '#/components/responses/BackendError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    get:
+      tags: [executions]
+      operationId: listExecutions
+      summary: List executions
+      description: Newest first, without stdout and stderr.
+      responses:
+        '200':
+          description: Every execution of the sandbox.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{sandbox_id}/executions/{execution_id}:
+    parameters:
+      - $ref: '#/components/parameters/SandboxID'
+      - $ref: '#/components/parameters/ExecutionID'
+    get:
+      tags: [executions]
+      operationId: getExecution
+      summary: Get one execution
+      description: Includes the retained stdout and stderr.
+      responses:
+        '200':
+          description: The execution.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/SandboxID'
+      - $ref: '#/components/parameters/ExecutionID'
+    post:
+      tags: [executions]
+      operationId: cancelExecution
+      summary: Cancel an execution
+      description: >-
+        Terminates the execution's whole process group with SIGTERM, then
+        SIGKILL after 2 seconds, and responds only once the execution is
+        completed. Canceling a completed execution returns it unchanged. If the
+        processes cannot be confirmed gone within 10 seconds the server removes
+        the container, so the sandbox becomes killed with kill_reason
+        requested.
+      responses:
+        '200':
+          description: The execution, in state completed with reason canceled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '502':
+          $ref: '#/components/responses/BackendError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{sandbox_id}/executions/{execution_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/SandboxID'
+      - $ref: '#/components/parameters/ExecutionID'
+      - $ref: '#/components/parameters/LastEventID'
+    get:
+      tags: [executions]
+      operationId: streamExecutionEvents
+      summary: Stream execution events
+      description: >-
+        Server-sent events. Event IDs are decimal integers starting at 1 and
+        increasing by 1 per event within an execution. Types are stdout and
+        stderr carrying data of at most 32 KiB per chunk, truncated carrying
+        limit_bytes and sent at most once, and complete carrying the full
+        Execution and always sent last. Last-Event-ID replays only events with
+        a greater ID, then continues live. The server sends a ping comment
+        every 15 seconds while idle and closes the stream after complete.
+        Closing a stream never affects the execution, and an open stream counts
+        as activity for the idle timeout.
+      responses:
+        '200':
+          description: An event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                id: 1
+                event: stdout
+                data: {"data":"hello\n"}
+
+                id: 2
+                event: complete
+                data: {"id":"exe_456","state":"completed","exit_code":0,"termination_reason":"exited"}
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sandboxes/{sandbox_id}/files:
+    parameters:
+      - $ref: '#/components/parameters/SandboxID'
+      - $ref: '#/components/parameters/FilePath'
+    get:
+      tags: [files]
+      operationId: readFile
+      summary: Read a file
+      description: >-
+        Returns the raw bytes. The sandbox resumes first if it is paused. A
+        path that is not absolute is an invalid request.
+      responses:
+        '200':
+          description: The file contents.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      tags: [files]
+      operationId: writeFile
+      summary: Write a file
+      description: >-
+        Writes raw bytes, creating parent directories and replacing an existing
+        file. The sandbox resumes first if it is paused. Idempotent.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '204':
+          description: The file was written.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '502':
+          $ref: '#/components/responses/BackendError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Required on every /v1 request when the server runs with
+        SANDBOX_API_KEY set. The key is compared in constant time. /healthz
+        never requires it.
+  parameters:
+    SandboxID:
+      name: sandbox_id
+      in: path
+      required: true
+      description: Opaque sandbox identifier. Clients must not parse it.
+      schema:
+        type: string
+    ExecutionID:
+      name: execution_id
+      in: path
+      required: true
+      description: Opaque execution identifier. Clients must not parse it.
+      schema:
+        type: string
+    FilePath:
+      name: path
+      in: query
+      required: true
+      description: Absolute path inside the sandbox.
+      schema:
+        type: string
+    LastEventID:
+      name: Last-Event-ID
+      in: header
+      required: false
+      description: >-
+        Replays only events whose ID is greater than this value, then continues
+        live. A non-integer value is 400 invalid_request.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: >-
+        400 invalid_request: malformed JSON, an invalid value, or an invalid
+        Last-Event-ID.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: invalid_request
+            message: command must not be empty
+    Unauthorized:
+      description: '401 unauthorized: the API key is missing or wrong.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: unauthorized
+            message: missing or invalid API key
+    NotFound:
+      description: '404 not_found: the sandbox, execution, or file does not exist.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: not_found
+            message: sandbox sbx_123 does not exist
+    Conflict:
+      description: >-
+        409, one of invalid_state (the operation is not allowed in the
+        sandbox's current state), busy (the sandbox already has a running
+        execution), or idempotency_conflict (the key was reused with a
+        different command).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid_state:
+              value:
+                code: invalid_state
+                message: sandbox sbx_123 is killed
+            busy:
+              value:
+                code: busy
+                message: sandbox sbx_123 is already running execution exe_456
+            idempotency_conflict:
+              value:
+                code: idempotency_conflict
+                message: idempotency key was used for a different command
+    PayloadTooLarge:
+      description: >-
+        413 payload_too_large: the request body exceeds 1 MiB, or a file
+        exceeds 10 MiB.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: payload_too_large
+            message: request body exceeds 1048576 bytes
+    RateLimited:
+      description: >-
+        429 rate_limited. Reserved: the reference server does not emit it, but
+        clients must handle it.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Internal:
+      description: '500 internal: an unexpected server error. Retryable.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BackendError:
+      description: '502 backend_error: the container runtime failed. Retryable.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: >-
+        503 unavailable: the server is shutting down or not ready. Retryable.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        version:
+          type: string
+          description: The build version.
+    CreateSandboxRequest:
+      type: object
+      description: >-
+        Every field is optional. Unknown fields are ignored so a newer client
+        can talk to an older server.
+      properties:
+        image:
+          type: string
+          default: alpine:3.20
+        memory_mb:
+          type: integer
+          minimum: 16
+          default: 512
+        timeout_seconds:
+          type: integer
+          minimum: 0
+          default: 300
+          description: Lifetime timeout; 0 disables it.
+        timeout_action:
+          type: string
+          enum: [kill, pause]
+          default: kill
+        idle_timeout_seconds:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Idle timeout; 0 disables it.
+        idle_timeout_action:
+          type: string
+          enum: [kill, pause]
+          default: kill
+    Sandbox:
+      type: object
+      required:
+        - id
+        - state
+        - image
+        - memory_mb
+        - timeout_seconds
+        - timeout_action
+        - idle_timeout_seconds
+        - idle_timeout_action
+        - created_at
+        - expires_at
+        - kill_reason
+      properties:
+        id:
+          type: string
+          description: Opaque identifier. Clients must not parse it.
+        state:
+          type: string
+          enum: [pending, running, paused, killed]
+        image:
+          type: string
+        memory_mb:
+          type: integer
+          minimum: 16
+        timeout_seconds:
+          type: integer
+          minimum: 0
+        timeout_action:
+          type: string
+          enum: [kill, pause]
+        idle_timeout_seconds:
+          type: integer
+          minimum: 0
+        idle_timeout_action:
+          type: string
+          enum: [kill, pause]
+        created_at:
+          type: string
+          format: date-time
+          description: RFC 3339 in UTC.
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            The current lifetime deadline. Null when the lifetime timeout is
+            disabled or the sandbox is killed.
+        kill_reason:
+          type: [string, 'null']
+          enum: [requested, timeout, idle_timeout, evicted, null]
+          description: Set when the sandbox is killed.
+    SandboxList:
+      type: object
+      required: [sandboxes]
+      properties:
+        sandboxes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Sandbox'
+    ExecuteRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: argv, executed without a shell.
+        idempotency_key:
+          type: string
+          maxLength: 128
+          description: >-
+            Optional. Scoped to the sandbox. Reusing a key with the same
+            command returns the existing execution; reusing it with a different
+            command is 409 idempotency_conflict.
+    ExecutionSummary:
+      type: object
+      required:
+        - id
+        - sandbox_id
+        - command
+        - state
+        - exit_code
+        - termination_reason
+        - output_truncated
+        - started_at
+        - finished_at
+      properties:
+        id:
+          type: string
+          description: Opaque identifier. Clients must not parse it.
+        sandbox_id:
+          type: string
+        command:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        state:
+          type: string
+          enum: [running, completed]
+        exit_code:
+          type: [integer, 'null']
+          description: >-
+            Null while running, or when the runtime could not report one.
+        termination_reason:
+          type: [string, 'null']
+          enum: [canceled, timeout, oom, evicted, exited, null]
+          description: >-
+            Null while running. Precedence: canceled, timeout, oom, evicted,
+            exited. Exit code 137 alone never implies oom.
+        output_truncated:
+          type: boolean
+          description: >-
+            True when output exceeded the retention limit of 1 MiB or 4096
+            events.
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+    Execution:
+      allOf:
+        - $ref: '#/components/schemas/ExecutionSummary'
+        - type: object
+          required: [stdout, stderr]
+          description: >-
+            Retained output. It is exactly the data delivered in events, so a
+            replay from ID 0 reproduces stdout and stderr.
+          properties:
+            stdout:
+              type: string
+            stderr:
+              type: string
+    ExecutionList:
+      type: object
+      required: [executions]
+      properties:
+        executions:
+          type: array
+          description: Newest first, without stdout and stderr.
+          items:
+            $ref: '#/components/schemas/ExecutionSummary'
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - unauthorized
+            - not_found
+            - invalid_state
+            - busy
+            - idempotency_conflict
+            - payload_too_large
+            - rate_limited
+            - internal
+            - backend_error
+            - unavailable
+        message:
+          type: string
