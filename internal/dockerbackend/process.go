@@ -3,6 +3,7 @@ package dockerbackend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -59,7 +60,7 @@ func (p *process) Wait() (int, error) {
 
 // Signal terminates the whole process group, including grandchildren. The
 // exec's PID exists only inside the container, so the PID file written by the
-// wrapper is read through the archive API and the group is killed from inside.
+// wrapper is read and the group is killed from inside.
 //
 // A missing PID file means the process has not started yet or has already
 // been reaped; the first is retried briefly, the second is a success.
@@ -85,15 +86,27 @@ func (p *process) Signal(sig daemon.Signal) error {
 }
 
 // pid reads the wrapper's PID file, retrying while the exec is still starting.
+//
+// The read goes through an exec, not the archive API: the file lives on a
+// tmpfs mount inside the container, and the archive endpoint resolves paths in
+// the daemon's own view of the container filesystem, where a mount the
+// container made for itself does not appear. Reading from inside asks the one
+// namespace that can see it.
 func (p *process) pid(limit time.Duration) (string, error) {
 	deadline := time.Now().Add(limit)
+	script := "cat " + p.pidPath + " 2>/dev/null"
 	for {
-		data, err := p.b.ReadFile(context.Background(), p.containerID, p.pidPath)
-		if err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		data, err := p.b.capture(ctx, p.containerID, []string{"/bin/sh", "-c", script})
+		cancel()
+		if err == nil && len(data) > 0 {
 			return parsePid(data)
 		}
-		if !isNotFound(err) || time.Now().After(deadline) {
-			return "", err
+		if time.Now().After(deadline) {
+			if err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("dockerbackend: pid file %s stayed empty for %v", p.pidPath, limit)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

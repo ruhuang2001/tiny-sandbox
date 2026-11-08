@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -307,37 +308,65 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+	// Events and pings both write to w, so one mutex keeps them from
+	// interleaving mid-event. The ping runs separately: the main loop must
+	// block on the next event, not on the ping interval, or a terminal event
+	// that arrives just after a batch waits a full 15 seconds.
+	var writeMu sync.Mutex
+	write := func(data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_, err := w.Write(data)
+		return err
+	}
+
+	pingDone := make(chan struct{})
+	defer close(pingDone)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingDone:
+				return
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if err := write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}()
+
 	for {
 		events, done, err := stream.Next(r.Context())
 		if err != nil {
 			return
 		}
 		for _, ev := range events {
-			if err := writeEvent(w, ev, flusher); err != nil {
+			data, err := renderEvent(ev)
+			if err != nil {
 				return
 			}
+			if err := write(data); err != nil {
+				return
+			}
+		}
+		if len(events) > 0 {
+			flusher.Flush()
 		}
 		if done {
 			return
 		}
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
-				return
-			}
-			flusher.Flush()
-		}
 	}
 }
 
-// writeEvent renders one event in SSE form. Payloads differ by type:
+// renderEvent formats one event in SSE form. Payloads differ by type:
 // stdout/stderr carry {"data": "<chunk>"}, truncated carries {"limit_bytes"},
 // and complete carries the full Execution.
-func writeEvent(w io.Writer, ev Event, flusher http.Flusher) error {
+func renderEvent(ev Event) ([]byte, error) {
 	var payload any
 	switch ev.Type {
 	case EventStdout, EventStderr:
@@ -351,13 +380,9 @@ func writeEvent(w io.Writer, ev Event, flusher http.Flusher) error {
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("daemon: encode %s event: %w", ev.Type, err)
+		return nil, fmt.Errorf("daemon: encode %s event: %w", ev.Type, err)
 	}
-	if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.ID, ev.Type, data); err != nil {
-		return err
-	}
-	flusher.Flush()
-	return nil
+	return fmt.Appendf(nil, "id: %d\nevent: %s\ndata: %s\n\n", ev.ID, ev.Type, data), nil
 }
 
 // ---------------------------------------------------------------- helpers

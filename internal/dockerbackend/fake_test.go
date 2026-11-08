@@ -329,9 +329,7 @@ func (f *fakeDaemon) execCreate(w http.ResponseWriter, r *http.Request, containe
 		ex.command = realCmd
 		real = realCmd
 	}
-	// programFn runs while the lock is held: it is a test-supplied decision
-	// with no reason to call back into the fake.
-	ex.stdout, ex.stderr, ex.exitCode = f.programLocked(containerID, real)
+	ex.stdout, ex.stderr, ex.exitCode = f.programLocked(containerID, c, real)
 	f.execs[ex.id] = ex
 	f.execCommands = append(f.execCommands, cfg.Cmd)
 	writeJSON(w, 201, map[string]string{"Id": ex.id})
@@ -339,12 +337,24 @@ func (f *fakeDaemon) execCreate(w http.ResponseWriter, r *http.Request, containe
 
 // programLocked decides what an exec does. Callers hold f.mu. The default
 // reads the cgroup files for the OOM script and succeeds silently otherwise.
-func (f *fakeDaemon) programLocked(containerID string, cmd []string) (string, string, int) {
+func (f *fakeDaemon) programLocked(containerID string, c *fakeContainer, cmd []string) (string, string, int) {
 	if f.programFn != nil {
 		return f.programFn(containerID, cmd)
 	}
 	if len(cmd) == 3 && cmd[0] == "/bin/sh" && cmd[2] == dockerapi.OOMScript {
 		return "low 0\nhigh 0\nmax 0\noom 0\noom_kill 5\n", "", 0
+	}
+	// "cat <pid file> 2>/dev/null": return the file the wrapper would have
+	// written, or nothing when the test withholds it.
+	if len(cmd) == 3 && cmd[0] == "/bin/sh" && strings.HasPrefix(cmd[2], "cat ") {
+		path := strings.TrimSuffix(strings.TrimPrefix(cmd[2], "cat "), " 2>/dev/null")
+		if f.noPidFile {
+			return "", "", 1
+		}
+		if data, ok := c.files[path]; ok {
+			return string(data), "", 0
+		}
+		return "", "", 1
 	}
 	return "", "", 0
 }
