@@ -186,15 +186,16 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 		return Execution{}, false, errorf(CodeBusy, "sandbox %s is already running execution %s", sandboxID, runningID)
 	}
 
-	// OOM evidence is attributed to this execution by taking the counter
-	// before the process starts. A failed read is recorded as -1, which
-	// disables the delta check rather than guessing.
+	// The counter read happens while the request is still alive, so the
+	// request's context is fine there. The process itself outlives the
+	// request that started it: net/http cancels the request context when the
+	// handler returns, and a command must keep running after that.
 	baseline, oomErr := s.backend.OOMKillCount(ctx, sb.container)
 	if oomErr != nil {
 		baseline = -1
 	}
 
-	proc, err := s.backend.Exec(ctx, sb.container, req.Command)
+	proc, err := s.backend.Exec(context.WithoutCancel(ctx), sb.container, req.Command)
 	if err != nil {
 		sb.mu.Unlock()
 		return Execution{}, false, backendError(err)

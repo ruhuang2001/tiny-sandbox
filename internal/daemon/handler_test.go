@@ -33,8 +33,15 @@ func newHandlerHarness(t *testing.T, opts ...daemon.Option) *handlerHarness {
 	return &handlerHarness{t: t, srv: srv, be: be}
 }
 
-// do sends a request and returns the response. body may be nil.
-func (h *handlerHarness) do(method, path string, body []byte, header map[string]string) *http.Response {
+// reply is one response, already read and closed so no test leaks a body.
+type reply struct {
+	Status int
+	Body   []byte
+	Header http.Header
+}
+
+// raw sends a request and returns the response fully read. body may be nil.
+func (h *handlerHarness) raw(method, path string, body []byte, header map[string]string) *reply {
 	h.t.Helper()
 	var r io.Reader
 	if body != nil {
@@ -51,20 +58,32 @@ func (h *handlerHarness) do(method, path string, body []byte, header map[string]
 	if err != nil {
 		h.t.Fatalf("%s %s: %v", method, path, err)
 	}
-	h.t.Cleanup(func() { _ = resp.Body.Close() })
-	return resp
+	data, err := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
+	if err != nil {
+		h.t.Fatalf("%s %s: read body: %v", method, path, err)
+	}
+	if closeErr != nil {
+		h.t.Fatalf("%s %s: close body: %v", method, path, closeErr)
+	}
+	return &reply{Status: resp.StatusCode, Body: data, Header: resp.Header}
+}
+
+// do is raw for callers that only need the status and the decoded body.
+func (h *handlerHarness) do(method, path string, body []byte, header map[string]string) *reply {
+	return h.raw(method, path, body, header)
 }
 
 // jsonBody decodes a response body into v.
-func (h *handlerHarness) jsonBody(resp *http.Response, v any) {
+func (h *handlerHarness) jsonBody(resp *reply, v any) {
 	h.t.Helper()
-	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+	if err := json.Unmarshal(resp.Body, v); err != nil {
 		h.t.Fatalf("decode body: %v", err)
 	}
 }
 
 // errorCode returns the contract code of an error response.
-func (h *handlerHarness) errorCode(resp *http.Response) string {
+func (h *handlerHarness) errorCode(resp *reply) string {
 	h.t.Helper()
 	var body struct {
 		Code string `json:"code"`
@@ -76,8 +95,8 @@ func (h *handlerHarness) errorCode(resp *http.Response) string {
 func (h *handlerHarness) create() daemon.Sandbox {
 	h.t.Helper()
 	resp := h.do(http.MethodPost, "/v1/sandboxes", []byte(`{"image":"alpine:3.20"}`), nil)
-	if resp.StatusCode != http.StatusCreated {
-		h.t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	if resp.Status != http.StatusCreated {
+		h.t.Fatalf("create status = %d, want 201", resp.Status)
 	}
 	var sb daemon.Sandbox
 	h.jsonBody(resp, &sb)
@@ -87,8 +106,8 @@ func (h *handlerHarness) create() daemon.Sandbox {
 func TestHandlerHealth(t *testing.T) {
 	h := newHandlerHarness(t)
 	resp := h.do(http.MethodGet, "/healthz", nil, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("status = %d", resp.Status)
 	}
 	var body map[string]string
 	h.jsonBody(resp, &body)
@@ -116,8 +135,8 @@ func TestHandlerLifecycle(t *testing.T) {
 		{http.MethodDelete, path, 200, daemon.StateKilled}, // idempotent
 	} {
 		resp := h.do(step.method, step.path, nil, nil)
-		if resp.StatusCode != step.status {
-			t.Fatalf("%s %s = %d, want %d", step.method, step.path, resp.StatusCode, step.status)
+		if resp.Status != step.status {
+			t.Fatalf("%s %s = %d, want %d", step.method, step.path, resp.Status, step.status)
 		}
 		var got daemon.Sandbox
 		h.jsonBody(resp, &got)
@@ -128,8 +147,8 @@ func TestHandlerLifecycle(t *testing.T) {
 
 	// Pause and resume are invalid on a killed sandbox.
 	resp := h.do(http.MethodPost, path+"/pause", nil, nil)
-	if resp.StatusCode != http.StatusConflict || h.errorCode(resp) != "invalid_state" {
-		t.Errorf("pause killed = %d %s, want 409 invalid_state", resp.StatusCode, h.errorCode(resp))
+	if resp.Status != http.StatusConflict || h.errorCode(resp) != "invalid_state" {
+		t.Errorf("pause killed = %d %s, want 409 invalid_state", resp.Status, h.errorCode(resp))
 	}
 }
 
@@ -163,7 +182,7 @@ func TestHandlerAuth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get %s: %v", path, err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		return resp.StatusCode
 	}
 
@@ -190,8 +209,8 @@ func TestHandlerExecutionFlow(t *testing.T) {
 	base := "/v1/sandboxes/" + sb.ID + "/executions"
 
 	resp := h.do(http.MethodPost, base, []byte(`{"command":["echo","hello"]}`), nil)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("start = %d, want 201", resp.StatusCode)
+	if resp.Status != http.StatusCreated {
+		t.Fatalf("start = %d, want 201", resp.Status)
 	}
 	var ex daemon.Execution
 	h.jsonBody(resp, &ex)
@@ -222,9 +241,8 @@ func TestHandlerExecutionFlow(t *testing.T) {
 
 	// List responses carry no output field at all.
 	listResp := h.do(http.MethodGet, base, nil, nil)
-	raw, _ := io.ReadAll(listResp.Body)
-	if strings.Contains(string(raw), `"stdout"`) {
-		t.Errorf("list response carries stdout: %s", raw)
+	if strings.Contains(string(listResp.Body), `"stdout"`) {
+		t.Errorf("list response carries stdout: %s", listResp.Body)
 	}
 }
 
@@ -240,22 +258,22 @@ func TestHandlerBusyAndIdempotency(t *testing.T) {
 	base := "/v1/sandboxes/" + sb.ID + "/executions"
 
 	first := h.do(http.MethodPost, base, []byte(`{"command":["slow"],"idempotency_key":"k1"}`), nil)
-	if first.StatusCode != http.StatusCreated {
-		t.Fatalf("first start = %d", first.StatusCode)
+	if first.Status != http.StatusCreated {
+		t.Fatalf("first start = %d", first.Status)
 	}
 	var ex daemon.Execution
 	h.jsonBody(first, &ex)
 
 	// A second start with a different command is busy.
 	busy := h.do(http.MethodPost, base, []byte(`{"command":["other"]}`), nil)
-	if busy.StatusCode != http.StatusConflict || h.errorCode(busy) != "busy" {
-		t.Fatalf("second start = %d %s, want 409 busy", busy.StatusCode, h.errorCode(busy))
+	if busy.Status != http.StatusConflict || h.errorCode(busy) != "busy" {
+		t.Fatalf("second start = %d %s, want 409 busy", busy.Status, h.errorCode(busy))
 	}
 
 	// The same key and command replays the record with 200.
 	replay := h.do(http.MethodPost, base, []byte(`{"command":["slow"],"idempotency_key":"k1"}`), nil)
-	if replay.StatusCode != http.StatusOK {
-		t.Fatalf("replay = %d, want 200", replay.StatusCode)
+	if replay.Status != http.StatusOK {
+		t.Fatalf("replay = %d, want 200", replay.Status)
 	}
 	var again daemon.Execution
 	h.jsonBody(replay, &again)
@@ -265,8 +283,8 @@ func TestHandlerBusyAndIdempotency(t *testing.T) {
 
 	// The same key with a different command conflicts.
 	conflict := h.do(http.MethodPost, base, []byte(`{"command":["other"],"idempotency_key":"k1"}`), nil)
-	if conflict.StatusCode != http.StatusConflict || h.errorCode(conflict) != "idempotency_conflict" {
-		t.Fatalf("conflict = %d %s", conflict.StatusCode, h.errorCode(conflict))
+	if conflict.Status != http.StatusConflict || h.errorCode(conflict) != "idempotency_conflict" {
+		t.Fatalf("conflict = %d %s", conflict.Status, h.errorCode(conflict))
 	}
 
 	close(release)
@@ -327,7 +345,7 @@ func TestHandlerEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	defer streamResp.Body.Close()
+	defer func() { _ = streamResp.Body.Close() }()
 	if ct := streamResp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("content-type = %q", ct)
 	}
@@ -362,7 +380,7 @@ func TestHandlerEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
-	defer replayResp.Body.Close()
+	defer func() { _ = replayResp.Body.Close() }()
 	replayed := readSSE(t, replayResp.Body)
 	if len(replayed) != len(events)-1 {
 		t.Fatalf("replay has %d events, want %d", len(replayed), len(events)-1)
@@ -373,8 +391,8 @@ func TestHandlerEventStream(t *testing.T) {
 
 	// A bad Last-Event-ID is rejected before streaming starts.
 	bad := h.do(http.MethodGet, base+"/"+ex.ID+"/events", nil, map[string]string{"Last-Event-ID": "abc"})
-	if bad.StatusCode != http.StatusBadRequest || h.errorCode(bad) != "invalid_request" {
-		t.Errorf("bad Last-Event-ID = %d %s", bad.StatusCode, h.errorCode(bad))
+	if bad.Status != http.StatusBadRequest || h.errorCode(bad) != "invalid_request" {
+		t.Errorf("bad Last-Event-ID = %d %s", bad.Status, h.errorCode(bad))
 	}
 }
 
@@ -384,24 +402,23 @@ func TestHandlerFiles(t *testing.T) {
 	base := "/v1/sandboxes/" + sb.ID + "/files?path=/work/out.txt"
 
 	put := h.do(http.MethodPut, base, []byte("file contents"), nil)
-	if put.StatusCode != http.StatusNoContent {
-		t.Fatalf("put = %d", put.StatusCode)
+	if put.Status != http.StatusNoContent {
+		t.Fatalf("put = %d", put.Status)
 	}
 
 	get := h.do(http.MethodGet, base, nil, nil)
-	data, _ := io.ReadAll(get.Body)
-	if get.StatusCode != http.StatusOK || string(data) != "file contents" {
-		t.Fatalf("get = %d %q", get.StatusCode, data)
+	if get.Status != http.StatusOK || string(get.Body) != "file contents" {
+		t.Fatalf("get = %d %q", get.Status, get.Body)
 	}
 
 	missing := h.do(http.MethodGet, "/v1/sandboxes/"+sb.ID+"/files?path=/nope", nil, nil)
-	if missing.StatusCode != http.StatusNotFound || h.errorCode(missing) != "not_found" {
-		t.Errorf("missing file = %d %s", missing.StatusCode, h.errorCode(missing))
+	if missing.Status != http.StatusNotFound || h.errorCode(missing) != "not_found" {
+		t.Errorf("missing file = %d %s", missing.Status, h.errorCode(missing))
 	}
 
 	relative := h.do(http.MethodGet, "/v1/sandboxes/"+sb.ID+"/files?path=relative", nil, nil)
-	if relative.StatusCode != http.StatusBadRequest || h.errorCode(relative) != "invalid_request" {
-		t.Errorf("relative path = %d %s", relative.StatusCode, h.errorCode(relative))
+	if relative.Status != http.StatusBadRequest || h.errorCode(relative) != "invalid_request" {
+		t.Errorf("relative path = %d %s", relative.Status, h.errorCode(relative))
 	}
 }
 
@@ -412,28 +429,28 @@ func TestHandlerRequestLimits(t *testing.T) {
 	// A file above 10 MiB is rejected rather than truncated.
 	big := bytes.Repeat([]byte("x"), daemon.MaxFileBytes+1)
 	resp := h.do(http.MethodPut, "/v1/sandboxes/"+sb.ID+"/files?path=/big", big, nil)
-	if resp.StatusCode != http.StatusRequestEntityTooLarge || h.errorCode(resp) != "payload_too_large" {
-		t.Errorf("big file = %d %s", resp.StatusCode, h.errorCode(resp))
+	if resp.Status != http.StatusRequestEntityTooLarge || h.errorCode(resp) != "payload_too_large" {
+		t.Errorf("big file = %d %s", resp.Status, h.errorCode(resp))
 	}
 
 	// A JSON body above 1 MiB is rejected.
 	huge := []byte(`{"image":"` + strings.Repeat("a", daemon.MaxRequestBodyBytes) + `"}`)
 	resp = h.do(http.MethodPost, "/v1/sandboxes", huge, nil)
-	if resp.StatusCode != http.StatusRequestEntityTooLarge || h.errorCode(resp) != "payload_too_large" {
-		t.Errorf("big body = %d %s", resp.StatusCode, h.errorCode(resp))
+	if resp.Status != http.StatusRequestEntityTooLarge || h.errorCode(resp) != "payload_too_large" {
+		t.Errorf("big body = %d %s", resp.Status, h.errorCode(resp))
 	}
 
 	// Malformed JSON is a 400.
 	resp = h.do(http.MethodPost, "/v1/sandboxes", []byte(`{`), nil)
-	if resp.StatusCode != http.StatusBadRequest || h.errorCode(resp) != "invalid_request" {
-		t.Errorf("malformed = %d %s", resp.StatusCode, h.errorCode(resp))
+	if resp.Status != http.StatusBadRequest || h.errorCode(resp) != "invalid_request" {
+		t.Errorf("malformed = %d %s", resp.Status, h.errorCode(resp))
 	}
 }
 
 func TestHandlerNotFound(t *testing.T) {
 	h := newHandlerHarness(t)
 	resp := h.do(http.MethodGet, "/v1/sandboxes/sbx_missing", nil, nil)
-	if resp.StatusCode != http.StatusNotFound || h.errorCode(resp) != "not_found" {
-		t.Fatalf("get missing = %d %s", resp.StatusCode, h.errorCode(resp))
+	if resp.Status != http.StatusNotFound || h.errorCode(resp) != "not_found" {
+		t.Fatalf("get missing = %d %s", resp.Status, h.errorCode(resp))
 	}
 }

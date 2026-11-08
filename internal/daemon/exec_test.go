@@ -120,6 +120,31 @@ func TestExecutions(t *testing.T) {
 		}
 	})
 
+	t.Run("execution outlives the request context", func(t *testing.T) {
+		h := newHarness(t)
+		h.be.Programs["echo"] = memEcho
+		sb := h.create(daemon.CreateRequest{})
+
+		// net/http cancels the request's context when the handler returns.
+		// The command must keep running and report its real exit status, not
+		// a 137 caused by that cancel.
+		reqCtx, cancel := context.WithCancel(ctx)
+		ex, _, err := h.s.StartExecution(reqCtx, sb.ID, daemon.ExecuteRequest{Command: []string{"echo", "ok"}})
+		wantNoError(t, err)
+		cancel()
+
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if done.ExitCode == nil || *done.ExitCode != 0 {
+			t.Fatalf("exit code = %v, want 0: the request context decided the outcome", done.ExitCode)
+		}
+		if done.TerminationReason == nil || *done.TerminationReason != daemon.ReasonExited {
+			t.Fatalf("reason = %v, want exited", done.TerminationReason)
+		}
+		if done.Stdout != "ok\n" {
+			t.Fatalf("stdout = %q, want ok", done.Stdout)
+		}
+	})
+
 	t.Run("backend exec failure", func(t *testing.T) {
 		h := newHarness(t)
 		sb := h.create(daemon.CreateRequest{})

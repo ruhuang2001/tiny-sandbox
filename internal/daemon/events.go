@@ -8,6 +8,7 @@ import (
 // EventType is the name of an SSE event, as documented in api.md.
 type EventType string
 
+// Event types carried by the execution stream.
 const (
 	EventStdout    EventType = "stdout"
 	EventStderr    EventType = "stderr"
@@ -119,14 +120,6 @@ func (l *eventLog) appendLocked(ev Event) {
 	ev.ID = l.nextID
 	l.events = append(l.events, ev)
 	l.notifyLocked()
-}
-
-// eventsAfter returns every event with ID greater than after, and whether the
-// log is complete and fully delivered.
-func (l *eventLog) eventsAfter(after uint64) ([]Event, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.eventsAfterLocked(after)
 }
 
 func (l *eventLog) eventsAfterLocked(after uint64) ([]Event, bool) {
