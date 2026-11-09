@@ -207,6 +207,57 @@ check "timeout exit" "timeout exits 1" "$code" "1"
 contains "timeout reason" "timeout status line" "$OUT/timeout.err" "(timeout)"
 contains "timeout hint" "timeout hint" "$OUT/timeout.err" "hint: increase --timeout"
 
+# ---------------------------------------------------------------- hardening
+
+note "hardening"
+# These limits are not in the HTTP contract: the backend fixes them. The check
+# therefore reads the container's own cgroup, which is the only evidence that
+# the limit reached the runtime and not just the request struct.
+"$BIN/sandboxctl" run --image python:3.12-alpine -- \
+  sh -c 'cat /sys/fs/cgroup/pids.max 2>/dev/null; grep -E "^(CapEff|NoNewPrivs):" /proc/self/status' \
+  >"$OUT/hardening.out" 2>"$OUT/hardening.err"
+check "hardening exit" "the probe command succeeds" "$?" "0"
+contains "hardening pids" "pids limit reaches the cgroup" "$OUT/hardening.out" "1024"
+contains "hardening nonewprivs" "no-new-privileges is set" "$OUT/hardening.out" "NoNewPrivs:	1"
+
+# The fork bomb is what the pids limit exists for. Memory alone does not stop
+# it: a sleeping child costs a task slot, not a page.
+"$BIN/sandboxctl" run --image python:3.12-alpine -- python3 -c '
+import os, sys, time
+kids = []
+try:
+    for _ in range(5000):
+        pid = os.fork()
+        if pid == 0:
+            time.sleep(3)
+            os._exit(0)
+        kids.append(pid)
+except OSError:
+    pass
+print(len(kids))
+' >"$OUT/fork.out" 2>"$OUT/fork.err"
+code=$?
+forks=$(tr -dc '0-9' <"$OUT/fork.out")
+check "fork exit" "a fork bomb does not kill the command" "$code" "0"
+if [ -n "$forks" ] && [ "$forks" -lt 2000 ]; then
+  pass "fork bounded"
+else
+  fail "fork bounded" "fork bomb was not bounded by the pids limit" "${forks:-none}" "<2000"
+fi
+
+# Raw sockets need CAP_NET_RAW. Without it Python raises PermissionError; if
+# the capability were present the probe would print raw-ok and pass silently.
+"$BIN/sandboxctl" run --image python:3.12-alpine -- python3 -c '
+import socket
+try:
+    socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    print("raw-ok")
+except PermissionError:
+    print("raw-denied")
+' >"$OUT/capraw.out" 2>"$OUT/capraw.err"
+check "cap_net_raw exit" "the capability probe succeeds" "$?" "0"
+check "cap_net_raw dropped" "CAP_NET_RAW is dropped" "$(cat "$OUT/capraw.out")" "raw-denied"
+
 # ---------------------------------------------------------------- 404 and busy hints
 
 note "404 hint"

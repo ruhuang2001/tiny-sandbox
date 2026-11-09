@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,18 @@ func TestCreateSendsLimitsAndLabels(t *testing.T) {
 	}
 	if _, ok := cfg.HostConfig.Tmpfs[PidDir]; !ok {
 		t.Errorf("tmpfs %s is not mounted: %v", PidDir, cfg.HostConfig.Tmpfs)
+	}
+	if cfg.HostConfig.PidsLimit == nil {
+		t.Fatal("pids limit is unset: an unchecked fork bomb reaches the host")
+	}
+	if *cfg.HostConfig.PidsLimit != DefaultPidsLimit {
+		t.Errorf("pids_limit = %d, want %d", *cfg.HostConfig.PidsLimit, DefaultPidsLimit)
+	}
+	if !slices.Contains(cfg.HostConfig.CapDrop, "NET_RAW") {
+		t.Errorf("cap_drop = %v, want NET_RAW among them", cfg.HostConfig.CapDrop)
+	}
+	if !slices.Contains(cfg.HostConfig.SecurityOpt, "no-new-privileges") {
+		t.Errorf("security_opt = %v, want no-new-privileges", cfg.HostConfig.SecurityOpt)
 	}
 	if cfg.Labels[daemon.OwnerLabelKey] != "127.0.0.1:8080" {
 		t.Errorf("labels = %v", cfg.Labels)

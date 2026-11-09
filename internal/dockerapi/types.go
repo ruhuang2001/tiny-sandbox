@@ -10,12 +10,20 @@ type ContainerConfig struct {
 	HostConfig HostConfig        `json:"HostConfig"`
 }
 
-// HostConfig carries the resource limits. MemorySwap is set equal to Memory
-// so a sandbox cannot use swap to exceed its declared memory limit.
+// HostConfig carries the resource limits and the security floor every sandbox
+// container is created with. MemorySwap is set equal to Memory so a sandbox
+// cannot use swap to exceed its declared memory limit.
+//
+// PidsLimit is a pointer because Docker distinguishes "unset" from zero: zero
+// means unlimited, and an unset field would let the daemon's own default
+// apply. The sandbox always sets it.
 type HostConfig struct {
-	Memory     int64             `json:"Memory,omitempty"`
-	MemorySwap int64             `json:"MemorySwap,omitempty"`
-	Tmpfs      map[string]string `json:"Tmpfs,omitempty"`
+	Memory      int64             `json:"Memory,omitempty"`
+	MemorySwap  int64             `json:"MemorySwap,omitempty"`
+	PidsLimit   *int64            `json:"PidsLimit,omitempty"`
+	CapDrop     []string          `json:"CapDrop,omitempty"`
+	SecurityOpt []string          `json:"SecurityOpt,omitempty"`
+	Tmpfs       map[string]string `json:"Tmpfs,omitempty"`
 }
 
 // Container is one entry of GET /containers/json.
