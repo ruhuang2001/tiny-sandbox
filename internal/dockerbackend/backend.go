@@ -45,10 +45,6 @@ const PidDir = "/run/tiny-sandbox"
 // wait. Under a pids limit an unreaped zombie is a permanently lost task slot.
 var initCommand = []string{"sleep", "infinity"}
 
-// Hardening defaults. They are fixed by the backend rather than by the request
-// because a caller who runs untrusted code cannot be trusted to pick limits
-// that protect the host. Fields the contract does not expose stay here until
-// there is a reason and an e2e test for each knob.
 // DefaultPidsLimit bounds processes and threads per sandbox when the spec does
 // not set one. The value is counted by the pids cgroup, which counts tasks, not
 // processes: a JVM or a Go build needs hundreds of threads. Memory limits do
