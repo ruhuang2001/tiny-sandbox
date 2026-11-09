@@ -14,6 +14,10 @@ mkdir -p "$OUT"
 
 PORT=${E2E_PORT:-18081}
 export SANDBOX_DOMAIN="http://127.0.0.1:$PORT"
+# The server labels every container with its listen address. Scoping the leak
+# check to this exact value means it asserts what this run created, not what
+# happens to carry the label's key from anything else on the host.
+OWNER="127.0.0.1:$PORT"
 unset SANDBOX_API_KEY || true
 
 BIN=$ROOT/bin
@@ -29,7 +33,7 @@ cleanup() {
     kill "$server_pid" 2>/dev/null
     wait "$server_pid" 2>/dev/null
   fi
-  ids=$(docker ps -aq --filter 'label=tiny-sandbox.owner')
+  ids=$(docker ps -aq --filter "label=tiny-sandbox.owner=$OWNER")
   [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1
 }
 trap cleanup EXIT
@@ -227,9 +231,17 @@ wait "$holder_pid" 2>/dev/null
 note "evicted hint"
 "$BIN/sandboxctl" run -- sleep 30 >"$OUT/evict.out" 2>"$OUT/evict.err" &
 evict_pid=$!
-sleep 2
+# Wait for the CLI to report its sandbox and execution rather than guessing a
+# fixed delay: the container must exist before it can be killed.
+for _ in $(seq 1 100); do
+  grep -q '^execution: exe_' "$OUT/evict.err" 2>/dev/null && break
+  sleep 0.1
+done
 evict_sandbox=$(sed -n 's/^sandbox: \(sbx_[a-z0-9]*\).*/\1/p' "$OUT/evict.err" | head -1)
-evict_container=$(docker ps -q --filter 'label=tiny-sandbox.owner' | head -1)
+# Select the exact container by the name the server gives it. A bare
+# `docker ps | head -1` would pick any running sandbox, including ones earlier
+# checks left behind, and kill the wrong one.
+evict_container=$(docker ps -q --filter "name=^tiny-sandbox-${evict_sandbox}$" | head -1)
 if [ -n "$evict_container" ]; then
   docker kill "$evict_container" >/dev/null 2>&1
   wait "$evict_pid"
@@ -238,7 +250,7 @@ if [ -n "$evict_container" ]; then
   contains "evicted status" "evicted status line" "$OUT/evict.err" "(evicted)"
   contains "evicted hint" "evicted hint" "$OUT/evict.err" "hint: the container was stopped outside sandboxd"
 else
-  fail "evicted setup" "no container found for the running sandbox" "none" "one"
+  fail "evicted setup" "container tiny-sandbox-$evict_sandbox was not found" "none" "one"
   kill "$evict_pid" 2>/dev/null
 fi
 
@@ -265,7 +277,7 @@ note "cleanup"
 kill "$server_pid" 2>/dev/null
 wait "$server_pid" 2>/dev/null
 server_pid=""
-docker ps -a --filter 'label=tiny-sandbox.owner' --format '{{.ID}} {{.Names}}' >"$OUT/containers.txt"
+docker ps -a --filter "label=tiny-sandbox.owner=$OWNER" --format '{{.ID}} {{.Names}}' >"$OUT/containers.txt"
 check "containers" "no sandbox containers remain" "$(wc -l <"$OUT/containers.txt" | tr -d ' ')" "0"
 
 # ---------------------------------------------------------------- summary
