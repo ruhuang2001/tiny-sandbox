@@ -310,15 +310,21 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// Events and pings both write to w, so one mutex keeps them from
-	// interleaving mid-event. The ping runs separately: the main loop must
-	// block on the next event, not on the ping interval, or a terminal event
-	// that arrives just after a batch waits a full 15 seconds.
+	// interleaving mid-event. The lock covers the flush as well as the write:
+	// Flush and Write share net/http's buffered writer, so a flush on one
+	// goroutine while the other writes corrupts the frame. The ping runs
+	// separately because the main loop must block on the next event, not on
+	// the ping interval, or a terminal event that arrives just after a batch
+	// waits a full 15 seconds.
 	var writeMu sync.Mutex
 	write := func(data []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		_, err := w.Write(data)
-		return err
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
 	}
 
 	pingDone := make(chan struct{})
@@ -345,7 +351,6 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 				if err := write([]byte(": ping\n\n")); err != nil {
 					return
 				}
-				flusher.Flush()
 			}
 		}
 	}()
@@ -363,9 +368,6 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 			if err := write(data); err != nil {
 				return
 			}
-		}
-		if len(events) > 0 {
-			flusher.Flush()
 		}
 		if done {
 			return

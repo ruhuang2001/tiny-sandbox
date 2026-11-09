@@ -216,7 +216,7 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 	// the read is retried once. A second failure is rare and is reported in
 	// the log, because OOM detection is the one thing a 137 cannot recover
 	// from afterwards.
-	baseline, oomErr := s.readOOMPaseline(ctx, sb.container)
+	baseline, oomErr := s.readOOMBaseline(ctx, sb.container)
 	if oomErr != nil {
 		log.Printf("daemon: oom baseline for %s unavailable, oom detection disabled for this execution: %v",
 			sb.id, oomErr)
@@ -256,10 +256,10 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 	return out, true, nil
 }
 
-// readOOMPaseline returns the cgroup oom_kill counter, retrying once. A
+// readOOMBaseline returns the cgroup oom_kill counter, retrying once. A
 // failed read is reported to the caller, which records -1: the classifier then
 // skips the delta check rather than guess.
-func (s *Sandboxes) readOOMPaseline(ctx context.Context, containerID string) (int64, error) {
+func (s *Sandboxes) readOOMBaseline(ctx context.Context, containerID string) (int64, error) {
 	baseline, err := s.backend.OOMKillCount(ctx, containerID)
 	if err == nil {
 		return baseline, nil

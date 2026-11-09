@@ -392,13 +392,15 @@ var _ = json.Marshal
 // the lifetime timeout. Zero used to mean "flag not given", so the sandbox
 // silently fell back to the 300-second default.
 func TestRunForwardsExplicitZeroTimeouts(t *testing.T) {
-	rf := &runFlags{memoryMB: unsetFlag, timeout: unsetFlag, idleTimeout: unsetFlag}
+	rf := &runFlags{given: map[string]bool{}}
 	if req := rf.createRequest(); req.TimeoutSeconds != nil || req.IdleTimeoutSeconds != nil {
 		t.Fatalf("unset flags produced timeouts: %+v", req)
 	}
 
 	rf.timeout = 0
 	rf.idleTimeout = 0
+	rf.given["timeout"] = true
+	rf.given["idle-timeout"] = true
 	req := rf.createRequest()
 	if req.TimeoutSeconds == nil || *req.TimeoutSeconds != 0 {
 		t.Fatalf("--timeout 0 was dropped: %+v", req.TimeoutSeconds)
@@ -409,15 +411,20 @@ func TestRunForwardsExplicitZeroTimeouts(t *testing.T) {
 }
 
 // TestRunRejectsNegativeTimeouts checks that a negative value is a usage
-// error rather than a silent default.
+// error rather than a silent default. -1 is included because it used to be
+// the "flag not given" sentinel: an explicit -1 must not pass silently.
 func TestRunRejectsNegativeTimeouts(t *testing.T) {
-	h := newCLIHarness(t)
-	got := h.invoke("run", "--timeout", "-5", "--", "true")
-	if got.code != 2 {
-		t.Fatalf("run with --timeout -5 = %+v, want usage error", got)
-	}
-	if !strings.Contains(got.stderr, "must not be negative") {
-		t.Errorf("stderr = %q", got.stderr)
+	for _, value := range []string{"-1", "-5"} {
+		for _, flagName := range []string{"--timeout", "--idle-timeout", "--memory"} {
+			h := newCLIHarness(t)
+			got := h.invoke("run", flagName, value, "--", "true")
+			if got.code != 2 {
+				t.Errorf("run with %s %s = %+v, want usage error", flagName, value, got)
+			}
+			if !strings.Contains(got.stderr, "must not be negative") {
+				t.Errorf("%s %s stderr = %q", flagName, value, got.stderr)
+			}
+		}
 	}
 }
 

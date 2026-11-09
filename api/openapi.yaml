@@ -355,11 +355,17 @@ paths:
         increasing by 1 per event within an execution. Types are stdout and
         stderr carrying data of at most 32 KiB per chunk, truncated carrying
         limit_bytes and sent at most once, and complete carrying the full
-        Execution and always sent last. Last-Event-ID replays only events with
-        a greater ID, then continues live. The server sends a ping comment
+        Execution and always sent last. Output is text: chunks are cut on UTF-8
+        boundaries so a valid multi-byte character is never split across two
+        events, and bytes that are not valid UTF-8 are replaced with U+FFFD in
+        each stream independently. Last-Event-ID replays only events with a
+        greater ID, then continues live; a non-integer value or one beyond the
+        newest event is 400 invalid_request. The server sends a ping comment
         every 15 seconds while open and closes the stream after complete.
         Closing a stream never affects the execution, and an open stream counts
-        as activity for the idle timeout.
+        as activity for the idle timeout. A sandbox retains its 200 most recent
+        executions; older completed ones are dropped together with their
+        idempotency keys.
       responses:
         '200':
           description: An event stream.

@@ -29,8 +29,9 @@ Status: normative. Contract for `sandboxctl`. It is a thin layer over the [Go SD
 Numeric creation flags are forwarded when the caller gives them. `--timeout 0`
 and `--idle-timeout 0` therefore reach the server as explicit zeros and disable
 that timeout; omitting the flag keeps the server default. A negative value is a
-usage error (exit 2). `--memory` has no "disabled" value: the server's minimum of
-16 MB applies, and a non-positive value is rejected with an API error.
+usage error (exit 2) for every numeric flag. `--memory` has no "disabled" value:
+zero reaches the server and is rejected with an API error, because the server's
+minimum is 16 MB.
 
 ## Status lines (stderr)
 

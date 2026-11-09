@@ -76,34 +76,78 @@ func (s *Sandboxes) reapOne(ctx context.Context, sb *sandbox, now time.Time) {
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				s.killLocked(sb, KillEvicted)
+				return
 			}
-			// Any other failure is retried on the next beat.
+			// A failed pause may still have paused the container: the request
+			// can time out after Docker acted. Recording the transition only
+			// from the error would then leave the record running while the
+			// container is frozen, and every later beat would repeat a Pause
+			// that Docker answers with "already paused" forever. Ask the
+			// runtime what actually happened.
+			if liveness, livenessErr := s.liveness(ctx, sb.container); livenessErr == nil &&
+				liveness == LivenessPaused {
+				sb.state = StatePaused
+				sb.expiresAt = nil
+			}
+			// Otherwise the next beat retries.
 			return
 		}
 		sb.state = StatePaused
 		sb.expiresAt = nil
 	case ActionKill:
+		// terminateLocked bounds the removal itself and detaches it from the
+		// caller's context, so a reaper-driven kill during shutdown still
+		// completes; it also schedules a retry when the runtime does not
+		// answer in time.
+		s.terminateLocked(ctx, sb, reason)
+	}
+}
+
+// liveness reads one container's liveness with the reaper's per-call bound.
+func (s *Sandboxes) liveness(ctx context.Context, containerID string) (Liveness, error) {
+	callCtx, cancel := backendCtx(ctx)
+	defer cancel()
+	return s.backend.Liveness(callCtx, containerID)
+}
+
+// retryRemovals retries containers whose removal failed or timed out. A killed
+// record whose container is still running is invisible to everything else: the
+// eviction sweep skips killed sandboxes and a repeated delete returns the
+// stored record without retrying. Without this, a slow runtime would turn a
+// bounded timeout into a container that outlives the deadline it was killed
+// for, until the next process restart.
+func (s *Sandboxes) retryRemovals(ctx context.Context) {
+	s.retryMu.Lock()
+	ids := make([]string, 0, len(s.retryIDs))
+	for id := range s.retryIDs {
+		ids = append(ids, id)
+	}
+	s.retryMu.Unlock()
+
+	for _, id := range ids {
 		callCtx, cancel := backendCtx(ctx)
-		terminated := s.terminateWith(callCtx, sb, reason)
+		err := s.backend.Remove(callCtx, id)
 		cancel()
-		if !terminated {
-			// Removal failed or timed out. The record is still killed; the
-			// container is left for startup cleanup, as the contract says.
-			return
+		// ErrNotFound is success here: the container is gone either way.
+		if err == nil || errors.Is(err, ErrNotFound) {
+			s.retryMu.Lock()
+			delete(s.retryIDs, id)
+			s.retryMu.Unlock()
 		}
 	}
 }
 
-// terminateWith is terminateLocked with a report of whether removal succeeded,
-// so the reaper can tell a completed transition from one whose container is
-// still around. ctx already carries the reaper's per-call deadline; wrapping
-// it in WithoutCancel would drop that deadline, so it is used as is.
-func (s *Sandboxes) terminateWith(ctx context.Context, sb *sandbox, reason KillReason) bool {
-	s.killLocked(sb, reason)
-	if sb.container == "" {
-		return true
+// scheduleRemoval remembers a container the runtime would not remove. The set
+// is bounded: a runtime that cannot remove several hundred containers has a
+// problem the retry loop cannot solve, and startup cleanup still catches what
+// is dropped here.
+func (s *Sandboxes) scheduleRemoval(containerID string) {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	if len(s.retryIDs) >= maxRemovalRetries {
+		return
 	}
-	return s.backend.Remove(ctx, sb.container) == nil
+	s.retryIDs[containerID] = struct{}{}
 }
 
 // EvictSweep checks every live sandbox's container and evicts those whose
@@ -149,6 +193,7 @@ func (s *Sandboxes) Run(ctx context.Context) {
 		case <-tick.C:
 			s.Reap(ctx)
 			s.EvictSweep(ctx)
+			s.retryRemovals(ctx)
 		}
 	}
 }

@@ -192,17 +192,22 @@ type sseReader struct {
 	atEOF   bool
 }
 
-// maxEventBytes bounds one SSE line. A complete event carries the whole
-// Execution, so it can carry the full retained output, and JSON escaping can
-// expand any byte to six characters ("\u0001"). The daemon's retention limit
-// is 1 MiB across stdout and stderr, which allows a data line of about 6.2
-// MiB; 8 MiB leaves room for the remaining fields.
-const maxEventBytes = 8 << 20
+// maxEventBytes bounds one SSE line.
+//
+// A complete event carries the whole Execution, which has two parts that can
+// carry arbitrary bytes: `command` (accepted from a request body of up to
+// 1 MiB) and the retained stdout and stderr (1 MiB together). JSON escaping
+// turns one control byte into six characters ("\u0001"), and encoding/json
+// also escapes <, > and & the same way, so each part can expand sixfold:
+// 6 MiB of command plus 6 MiB of output, plus the other fields. 16 MiB covers
+// that with room to spare. The buffer grows lazily, so a small event costs a
+// small allocation.
+const maxEventBytes = 16 << 20
 
 func newSSEReader(r io.Reader) *sseReader {
 	scanner := bufio.NewScanner(r)
-	// The previous 2 MiB cap was below the worst case, so a command that
-	// printed control bytes failed to stream even though it completed.
+	// A cap below the worst case makes a command that printed control bytes
+	// fail to stream even though it completed.
 	scanner.Buffer(make([]byte, 64<<10), maxEventBytes)
 	return &sseReader{scanner: scanner}
 }

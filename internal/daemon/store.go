@@ -91,7 +91,18 @@ type Sandboxes struct {
 	mu    sync.Mutex
 	byID  map[string]*sandbox
 	order []*sandbox // creation order, for newest-first listings
+
+	// retryMu guards retryIDs: containers the runtime would not remove. It is
+	// a separate lock so a retry pass never waits on the store lock, and the
+	// reaper never waits on a removal it is itself scheduling.
+	retryMu  sync.Mutex
+	retryIDs map[string]struct{}
 }
+
+// maxRemovalRetries bounds the removal retry set. A runtime that cannot remove
+// this many containers has a problem the retry loop cannot solve; startup
+// cleanup still catches whatever is dropped.
+const maxRemovalRetries = 256
 
 // New returns Sandboxes backed by backend.
 func New(backend Backend, opts ...Option) *Sandboxes {
@@ -103,6 +114,7 @@ func New(backend Backend, opts ...Option) *Sandboxes {
 		cancelDeadline:  10 * time.Second,
 		sleep:           sleepContext,
 		byID:            make(map[string]*sandbox),
+		retryIDs:        make(map[string]struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -441,11 +453,12 @@ func (s *Sandboxes) killLocked(sb *sandbox, reason KillReason) {
 }
 
 // terminateLocked kills the sandbox and removes its container. Removal is
-// best effort: a container that is already gone is not an error, and a
-// backend failure leaves the startup cleanup to catch the leftover. The
-// removal is detached from the caller's context (a delete must not be
-// cancelled halfway by a disconnecting client) but bounded, so a runtime that
-// never answers does not pin the sandbox lock forever.
+// best effort: a container that is already gone is not an error. The removal
+// is detached from the caller's context (a delete must not be cancelled
+// halfway by a disconnecting client) but bounded, so a runtime that never
+// answers does not pin the sandbox lock forever. A removal that fails or times
+// out is scheduled for the reaper to retry: the record is already killed, and
+// nothing else would revisit that container.
 func (s *Sandboxes) terminateLocked(ctx context.Context, sb *sandbox, reason KillReason) {
 	s.killLocked(sb, reason)
 	if sb.container == "" {
@@ -453,7 +466,9 @@ func (s *Sandboxes) terminateLocked(ctx context.Context, sb *sandbox, reason Kil
 	}
 	removeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), BackendCallTimeout)
 	defer cancel()
-	_ = s.backend.Remove(removeCtx, sb.container)
+	if err := s.backend.Remove(removeCtx, sb.container); err != nil && !errors.Is(err, ErrNotFound) {
+		s.scheduleRemoval(sb.container)
+	}
 }
 
 // ---------------------------------------------------------------- helpers

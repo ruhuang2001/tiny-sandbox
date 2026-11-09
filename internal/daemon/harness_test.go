@@ -153,15 +153,29 @@ func memLongBlock(ctx context.Context, _ []string) (string, string, int) {
 	return "", "", 137
 }
 
-// flaky is a membackend whose Pause and Liveness can be made to fail, so the
-// error paths that a broken runtime produces are covered.
+// flaky is a membackend whose Pause, Liveness and Remove can be made to fail,
+// so the error paths that a broken runtime produces are covered.
 type flaky struct {
 	*membackend.Backend
 	pauseErr    error
 	livenessErr error
+	// pauseThenErr makes Pause act on the container and then report an error,
+	// the way a request that times out after Docker already paused it does.
+	pauseThenErr error
+	// removeFailures is how many Remove calls fail before one succeeds.
+	removeFailures int
+
+	mu       sync.Mutex
+	removals int
 }
 
 func (f *flaky) Pause(ctx context.Context, id string) error {
+	if f.pauseThenErr != nil {
+		if err := f.Backend.Pause(ctx, id); err != nil {
+			return err
+		}
+		return f.pauseThenErr
+	}
 	if f.pauseErr != nil {
 		return f.pauseErr
 	}
@@ -173,4 +187,16 @@ func (f *flaky) Liveness(ctx context.Context, id string) (daemon.Liveness, error
 		return daemon.LivenessRunning, f.livenessErr
 	}
 	return f.Backend.Liveness(ctx, id)
+}
+
+// Remove fails the first removeFailures calls, then delegates.
+func (f *flaky) Remove(ctx context.Context, id string) error {
+	f.mu.Lock()
+	f.removals++
+	failing := f.removals <= f.removeFailures
+	f.mu.Unlock()
+	if failing {
+		return errBoom
+	}
+	return f.Backend.Remove(ctx, id)
 }
