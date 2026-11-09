@@ -204,7 +204,7 @@ func hintFor(err error) string {
 	case errors.Is(err, sandbox.ErrOOM):
 		return "increase --memory or reduce the command's memory use"
 	case errors.Is(err, sandbox.ErrTimeout):
-		return "increase --timeout"
+		return "increase --timeout or --exec-timeout"
 	case errors.Is(err, sandbox.ErrEvicted):
 		return "the container was stopped outside sandboxd"
 	case errors.Is(err, sandbox.ErrBusy):

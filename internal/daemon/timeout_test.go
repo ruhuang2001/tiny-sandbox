@@ -185,6 +185,146 @@ func TestLifetimeTimeout(t *testing.T) {
 	})
 }
 
+// TestExecutionTimeout covers an execution's own deadline: it ends the command
+// but not the sandbox, it does not extend while the sandbox is paused, it is
+// independent of the lifetime deadline, and the first deadline to arrive wins.
+func TestExecutionTimeout(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("kills the execution and leaves the sandbox running", func(t *testing.T) {
+		h := newHarness(t)
+		h.be.Programs["block"] = memLongBlock
+		// A lifetime long enough that only the execution deadline can fire.
+		sb := h.create(daemon.CreateRequest{TimeoutSeconds: ptr(0)})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{
+			Command:        []string{"block"},
+			TimeoutSeconds: ptr(5),
+		})
+		wantNoError(t, err)
+
+		h.clock.Advance(4 * time.Second)
+		h.s.Reap(ctx)
+		if got, err := h.s.GetExecution(sb.ID, ex.ID); err != nil || got.State != daemon.ExecRunning {
+			t.Fatalf("execution before the deadline = %+v, want running", got)
+		}
+
+		h.clock.Advance(time.Second)
+		h.s.Reap(ctx)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if done.TerminationReason == nil || *done.TerminationReason != daemon.ReasonTimeout {
+			t.Fatalf("reason = %v, want timeout", done.TerminationReason)
+		}
+
+		// The whole point of an execution deadline: the sandbox and its files
+		// survive it, unlike a lifetime kill.
+		sandbox, err := h.s.Get(sb.ID)
+		wantNoError(t, err)
+		if sandbox.State != daemon.StateRunning {
+			t.Fatalf("sandbox state = %s, want running after an execution timeout", sandbox.State)
+		}
+		if sandbox.KillReason != nil {
+			t.Fatalf("kill_reason = %v, want null", *sandbox.KillReason)
+		}
+	})
+
+	t.Run("no deadline, no timeout", func(t *testing.T) {
+		h := newHarness(t)
+		h.be.Programs["block"] = memBlock
+		sb := h.create(daemon.CreateRequest{TimeoutSeconds: ptr(0)})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{Command: []string{"block"}})
+		wantNoError(t, err)
+
+		h.clock.Advance(time.Hour)
+		h.s.Reap(ctx)
+		if got, err := h.s.GetExecution(sb.ID, ex.ID); err != nil || got.State != daemon.ExecRunning {
+			t.Fatalf("execution = %+v, want still running: an unset deadline must not fire", got)
+		}
+	})
+
+	t.Run("zero is the same as unset", func(t *testing.T) {
+		h := newHarness(t)
+		h.be.Programs["block"] = memBlock
+		sb := h.create(daemon.CreateRequest{TimeoutSeconds: ptr(0)})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{
+			Command:        []string{"block"},
+			TimeoutSeconds: ptr(0),
+		})
+		wantNoError(t, err)
+		h.clock.Advance(time.Hour)
+		h.s.Reap(ctx)
+		if got, err := h.s.GetExecution(sb.ID, ex.ID); err != nil || got.State != daemon.ExecRunning {
+			t.Fatalf("execution = %+v, want still running", got)
+		}
+	})
+
+	t.Run("negative is invalid", func(t *testing.T) {
+		h := newHarness(t)
+		sb := h.create(daemon.CreateRequest{})
+		_, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{
+			Command:        []string{"true"},
+			TimeoutSeconds: ptr(-1),
+		})
+		wantCode(t, err, daemon.CodeInvalidRequest)
+	})
+
+	t.Run("a paused sandbox does not extend the deadline", func(t *testing.T) {
+		h := newHarness(t)
+		h.be.Programs["block"] = memLongBlock
+		sb := h.create(daemon.CreateRequest{TimeoutSeconds: ptr(0)})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{
+			Command:        []string{"block"},
+			TimeoutSeconds: ptr(10),
+		})
+		wantNoError(t, err)
+		if _, err := h.s.Pause(ctx, sb.ID); err != nil {
+			t.Fatalf("pause: %v", err)
+		}
+
+		// Well past the deadline while paused: the container cannot be
+		// signalled, so nothing fires yet.
+		h.clock.Advance(time.Hour)
+		h.s.Reap(ctx)
+		if got, err := h.s.GetExecution(sb.ID, ex.ID); err != nil || got.State != daemon.ExecRunning {
+			t.Fatalf("execution while paused = %+v, want running", got)
+		}
+
+		// Resuming is what lets the escalation land; the deadline is not
+		// refreshed, so the very next beat applies it.
+		if _, err := h.s.Resume(ctx, sb.ID); err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		h.s.Reap(ctx)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if done.TerminationReason == nil || *done.TerminationReason != daemon.ReasonTimeout {
+			t.Fatalf("reason = %v, want timeout after resume", done.TerminationReason)
+		}
+	})
+
+	t.Run("the earlier deadline wins", func(t *testing.T) {
+		h := newHarness(t)
+		h.be.Programs["block"] = memLongBlock
+		sb := h.create(daemon.CreateRequest{TimeoutSeconds: ptr(5)})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{
+			Command:        []string{"block"},
+			TimeoutSeconds: ptr(600),
+		})
+		wantNoError(t, err)
+
+		h.clock.Advance(5 * time.Second)
+		h.s.Reap(ctx)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if done.TerminationReason == nil || *done.TerminationReason != daemon.ReasonTimeout {
+			t.Fatalf("reason = %v, want timeout", done.TerminationReason)
+		}
+		// The lifetime deadline fired, so the sandbox is killed, not kept.
+		sandbox, err := h.s.Get(sb.ID)
+		wantNoError(t, err)
+		if sandbox.State != daemon.StateKilled {
+			t.Fatalf("sandbox state = %s, want killed: the lifetime deadline came first", sandbox.State)
+		}
+	})
+}
+
 // TestIdleTimeout covers the idle rules: idle while running with no execution
 // and no stream, measured from the latest activity.
 func TestIdleTimeout(t *testing.T) {

@@ -727,6 +727,14 @@ components:
             Optional. Scoped to the sandbox. Reusing a key with the same
             command returns the existing execution; reusing it with a different
             command is 409 idempotency_conflict.
+        timeout_seconds:
+          type: integer
+          minimum: 0
+          description: >-
+            Optional. Bounds this execution, in seconds. Omitted or 0 means the
+            execution has no deadline of its own. The sandbox lifetime deadline
+            still applies, and whichever comes first ends the command with
+            termination_reason timeout while leaving the sandbox running.
     ExecutionSummary:
       type: object
       required:

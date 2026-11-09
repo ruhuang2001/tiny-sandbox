@@ -165,7 +165,7 @@ func TestRunOOMAndTimeoutHints(t *testing.T) {
 	if hintFor(&fakeOOM{}) != "increase --memory or reduce the command's memory use" {
 		t.Error("oom hint is missing")
 	}
-	if hintFor(&fakeTimeout{}) != "increase --timeout" {
+	if hintFor(&fakeTimeout{}) != "increase --timeout or --exec-timeout" {
 		t.Error("timeout hint is missing")
 	}
 	if hintFor(&fakeEvicted{}) != "the container was stopped outside sandboxd" {

@@ -89,9 +89,13 @@ type CreateSandboxRequest struct {
 }
 
 // ExecuteRequest is the body of POST .../executions.
+//
+// TimeoutSeconds bounds one execution: nil or 0 means no deadline of its own.
+// The sandbox lifetime deadline still applies, and whichever comes first wins.
 type ExecuteRequest struct {
 	Command        []string `json:"command"`
 	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
 }
 
 // EventType is an SSE event type.

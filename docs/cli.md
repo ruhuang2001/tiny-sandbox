@@ -24,11 +24,16 @@ Status: normative. Contract for `sandboxctl`. It is a thin layer over the [Go SD
 | `version` | print the build version (injected with `-ldflags`) |
 | `help` | usage |
 
-`run` flags: `--sandbox ID`, `--image`, `--memory MB`, `--timeout S`, `--timeout-action kill|pause`, `--idle-timeout S`, `--idle-action kill|pause`, `--rm` (request cleanup of a sandbox created by this invocation). Creation flags together with `--sandbox` are an error. `--rm` does not remove a sandbox supplied through `--sandbox`. Cleanup errors are currently ignored; verify remote state when cleanup must be confirmed.
+`run` flags: `--sandbox ID`, `--image`, `--memory MB`, `--timeout S`, `--timeout-action kill|pause`, `--idle-timeout S`, `--idle-action kill|pause`, `--exec-timeout S`, `--rm` (request cleanup of a sandbox created by this invocation). Creation flags together with `--sandbox` are an error. `--rm` does not remove a sandbox supplied through `--sandbox`. Cleanup errors are currently ignored; verify remote state when cleanup must be confirmed.
+
+`--exec-timeout` bounds the command this invocation starts, not the sandbox. It
+is forwarded on the execution request, so unlike the creation flags it is valid
+together with `--sandbox`, and it is not a creation option.
 
 Numeric creation flags are forwarded when the caller gives them. `--timeout 0`
 and `--idle-timeout 0` therefore reach the server as explicit zeros and disable
-that timeout; omitting the flag keeps the server default. A negative value is a
+that timeout; omitting the flag keeps the server default. `--exec-timeout 0`
+likewise disables the execution deadline. A negative value is a
 usage error (exit 2) for every numeric flag. `--memory` has no "disabled" value:
 zero reaches the server and is rejected with an API error, because the server's
 minimum is 16 MB.
