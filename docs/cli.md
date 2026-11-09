@@ -26,9 +26,11 @@ Status: normative. Contract for `sandboxctl`. It is a thin layer over the [Go SD
 
 `run` flags: `--sandbox ID`, `--image`, `--memory MB`, `--timeout S`, `--timeout-action kill|pause`, `--idle-timeout S`, `--idle-action kill|pause`, `--rm` (request cleanup of a sandbox created by this invocation). Creation flags together with `--sandbox` are an error. `--rm` does not remove a sandbox supplied through `--sandbox`. Cleanup errors are currently ignored; verify remote state when cleanup must be confirmed.
 
-Numeric creation flags are forwarded only when positive. In particular,
-`--timeout 0` does not disable the default lifetime; use the SDK or HTTP API
-with an explicit zero to disable it.
+Numeric creation flags are forwarded when the caller gives them. `--timeout 0`
+and `--idle-timeout 0` therefore reach the server as explicit zeros and disable
+that timeout; omitting the flag keeps the server default. A negative value is a
+usage error (exit 2). `--memory` has no "disabled" value: the server's minimum of
+16 MB applies, and a non-positive value is rejected with an API error.
 
 ## Status lines (stderr)
 

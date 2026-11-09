@@ -180,7 +180,7 @@ No body. `200` Sandbox. Idempotent per the transition table.
 
 ### `POST /v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel`
 
-No body. Records canceled intent, sends SIGTERM to the process group, and waits up to 2 seconds for completion before SIGKILL. It then waits up to 8 more seconds before requesting container removal and marking the sandbox `killed` with `kill_reason: requested`. These are wait budgets: backend calls add time, and request cancellation can shorten the waits. After removal, it waits up to 2 more seconds and returns `200` with the latest Execution snapshot, which can still be nonterminal. Canceling an already completed execution returns it unchanged. See [cancellation and removal](#cancellation-and-removal).
+No body. Records canceled intent, sends SIGTERM to the process group, and waits up to 2 seconds for completion before SIGKILL. It then waits up to 8 more seconds before requesting container removal and marking the sandbox `killed` with `kill_reason: requested`. These are wait budgets: backend calls add time, and the caller disconnecting its cancel request does not shorten them — the server finishes the escalation on its own so a client timeout cannot turn a slow signal into container removal. After removal, it waits up to 2 more seconds and returns `200` with the latest Execution snapshot, which can still be nonterminal. Canceling an already completed execution returns it unchanged. See [cancellation and removal](#cancellation-and-removal).
 
 ### `GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/events`
 
@@ -217,7 +217,8 @@ data: {"id":"exe_456","state":"completed","exit_code":0,"termination_reason":"ex
 
 - Event IDs are decimal integers starting at 1 and increasing by 1 per event within an execution.
 - Types: `stdout` and `stderr` carry `{"data": "<chunk>"}`, at most 32 KiB per chunk; `truncated` carries `{"limit_bytes": <n>}` and is sent at most once; `complete` carries the full Execution and is always the last event.
-- `Last-Event-ID: <n>` replays only events with ID greater than `n`, then continues live. A non-integer value is `400 invalid_request`.
+- Output is text. Chunks are cut on UTF-8 boundaries, so a multi-byte character is never split across two events; a client that concatenates the chunks in order gets the bytes the process wrote. Invalid UTF-8 in the process output cannot be represented in the JSON string and arrives as U+FFFD replacement characters. A completed execution's `stdout` and `stderr` are the same buffer, so they carry the same substitution.
+- `Last-Event-ID: <n>` replays only events with ID greater than `n`, then continues live. A non-integer value, or a value beyond the newest event of the execution, is `400 invalid_request`: no such event will ever exist, and a running execution would otherwise leave the caller waiting for a replay that cannot arrive.
 - The server sends a `: ping` comment every 15 seconds while the stream is open, including while output is flowing.
 - The server closes the stream after `complete`. A finished execution replays its events and closes immediately.
 - Closing a stream never affects the execution. An open stream counts as activity for the idle timeout.
@@ -228,11 +229,17 @@ data: {"id":"exe_456","state":"completed","exit_code":0,"termination_reason":"ex
 |---|---|---|
 | Retained output per execution (stdout + stderr) | 1 MiB | further output is discarded, one `truncated` event is sent, `output_truncated: true`; the process keeps running |
 | Output events per execution | 4096 | same as above |
+| Executions retained per sandbox | 200 | the oldest completed execution is dropped, including its retained output and its idempotency key; the running execution is never dropped. `404 not_found` afterwards |
 | JSON request body | 1 MiB | `413 payload_too_large` |
 | File upload | 10 MiB | `413 payload_too_large` |
 | File download through Docker | 10 MiB | currently `502 backend_error` from archive extraction |
 
 The stored output is exactly the data delivered in events, so a replay from ID 0 reproduces `stdout` and `stderr`.
+
+Because retention is bounded, an idempotency key is remembered only while its
+execution is retained. A start that reuses a key older than the 200 most recent
+executions is treated as a new start and runs the command again; clients that
+need a longer window must track execution IDs themselves.
 
 ## Implementation limits
 

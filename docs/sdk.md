@@ -119,6 +119,12 @@ These are implementation limits, not additional guarantees:
   inspect the execution state; see [cancellation and removal](api.md#cancellation-and-removal).
 - Replay covers retained output only. A `truncated` event means further output
   was discarded; reconnecting cannot recover it.
+- Output is treated as UTF-8 text. Bytes that are not valid UTF-8 arrive as
+  U+FFFD, because output events carry JSON strings.
+- One SSE line is capped at 8 MiB. That covers the largest `complete` event the
+  server can send: 1 MiB of retained output, where JSON turns each control byte
+  into six characters, is about 6.3 MiB. A server that sent a larger single
+  event would end the stream with a `stream` error.
 
 ## Dependencies
 
