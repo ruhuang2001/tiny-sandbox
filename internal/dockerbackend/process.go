@@ -110,4 +110,3 @@ func (p *process) pid(limit time.Duration) (string, error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
-

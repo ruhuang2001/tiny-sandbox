@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -411,11 +412,19 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 // writeDaemonError maps a domain error to its contract status.
+// writeDaemonError maps a domain error to its contract status. A backend
+// failure is also logged with its cause: the client gets "container runtime
+// failed", but an operator reading the server log needs the reason, and a
+// failure that leaves no trace in the log is undiagnosable from the outside.
 func writeDaemonError(w http.ResponseWriter, err error) {
 	var e *Error
 	if !errors.As(err, &e) {
+		log.Printf("daemon: unexpected error: %v", err)
 		writeError(w, http.StatusInternalServerError, string(CodeInternal), "unexpected server error")
 		return
+	}
+	if e.Code == CodeBackendError || e.Code == CodeInternal {
+		log.Printf("daemon: %s: %v", e.Code, e)
 	}
 	writeError(w, statusFor(e.Code), string(e.Code), e.Message)
 }

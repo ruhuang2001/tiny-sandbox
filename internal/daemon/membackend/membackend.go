@@ -54,12 +54,12 @@ type Backend struct {
 }
 
 type container struct {
-	id     string
-	spec   daemon.ContainerSpec
-	state  daemon.Liveness
-	oom    int64
-	files  map[string][]byte
-	proc   *process
+	id    string
+	spec  daemon.ContainerSpec
+	state daemon.Liveness
+	oom   int64
+	files map[string][]byte
+	proc  *process
 }
 
 type process struct {

@@ -44,7 +44,12 @@ type fakeDaemon struct {
 	failStart bool
 	nameTaken string
 	noPidFile bool
-	programFn func(containerID string, cmd []string) (stdout, stderr string, exitCode int)
+	// missingImages makes create answer 404 "No such image" until the image is
+	// pulled, which is what a clean host does.
+	missingImages map[string]bool
+	pulled        []string
+	pullError     string
+	programFn     func(containerID string, cmd []string) (stdout, stderr string, exitCode int)
 }
 
 type fakeContainer struct {
@@ -84,11 +89,12 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 		t.Fatalf("listen: %v", err)
 	}
 	f := &fakeDaemon{
-		t:          t,
-		sock:       sock,
-		containers: make(map[string]*fakeContainer),
-		byName:     make(map[string]string),
-		execs:      make(map[string]*fakeExec),
+		t:             t,
+		sock:          sock,
+		containers:    make(map[string]*fakeContainer),
+		byName:        make(map[string]string),
+		execs:         make(map[string]*fakeExec),
+		missingImages: make(map[string]bool),
 	}
 	srv := &http.Server{Handler: f, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
@@ -127,6 +133,8 @@ func (f *fakeDaemon) serveV152(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/v1.52")
 
 	switch {
+	case p == "/images/create" && r.Method == http.MethodPost:
+		f.pullImage(w, r)
 	case p == "/containers/create" && r.Method == http.MethodPost:
 		f.create(w, r)
 	case p == "/containers/json" && r.Method == http.MethodGet:
@@ -144,6 +152,48 @@ func (f *fakeDaemon) serveV152(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// pullImage models POST /images/create: a progress stream that ends with the
+// image being available, or with an error line when the pull fails.
+func (f *fakeDaemon) pullImage(w http.ResponseWriter, r *http.Request) {
+	repository := r.URL.Query().Get("fromImage")
+	tag := r.URL.Query().Get("tag")
+	image := repository
+	if tag != "" && tag != "latest" {
+		image = repository + ":" + tag
+	}
+	if image == repository && tag == "latest" {
+		image = repository + ":latest"
+	}
+
+	f.mu.Lock()
+	f.pulled = append(f.pulled, image)
+	errMessage := f.pullError
+	// A failed pull leaves the image missing; a successful one makes it
+	// available, which is what the caller's retry depends on.
+	if errMessage == "" {
+		delete(f.missingImages, image)
+	}
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	if errMessage != "" {
+		writeJSONLine(w, map[string]string{"error": errMessage})
+		return
+	}
+	writeJSONLine(w, map[string]string{"status": "Pulling from library/" + repository})
+	writeJSONLine(w, map[string]string{"status": "Status: Downloaded newer image for " + image})
+}
+
+// writeJSONLine writes one line of the pull progress stream.
+func writeJSONLine(w http.ResponseWriter, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_, _ = w.Write(append(data, '\n'))
 }
 
 // containerOp serves start, pause, unpause, kill and delete.
@@ -218,6 +268,10 @@ func (f *fakeDaemon) create(w http.ResponseWriter, r *http.Request) {
 			f.byName[name] = id
 		}
 		writeError(w, 409, "Conflict. The container name "+name+" is already in use")
+		return
+	}
+	if f.missingImages[cfg.Image] {
+		writeError(w, 404, "No such image: "+cfg.Image)
 		return
 	}
 	f.creates = append(f.creates, cfg)

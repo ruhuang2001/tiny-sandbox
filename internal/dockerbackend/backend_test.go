@@ -68,6 +68,58 @@ func TestCreateRemovesContainerWhenStartFails(t *testing.T) {
 	}
 }
 
+// A clean host has no image, and the Engine API's create does not pull one.
+// Without this the server works on a developer machine and fails everywhere
+// else; CI caught exactly that.
+func TestCreatePullsMissingImage(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.mu.Lock()
+	f.missingImages["python:3.12-alpine"] = true
+	f.mu.Unlock()
+
+	b := f.backend(t)
+	id, err := b.Create(context.Background(), daemon.ContainerSpec{Image: "python:3.12-alpine", MemoryMB: 64})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if id == "" {
+		t.Fatal("create returned no container id")
+	}
+	f.mu.Lock()
+	pulled := append([]string(nil), f.pulled...)
+	f.mu.Unlock()
+	if len(pulled) != 1 || pulled[0] != "python:3.12-alpine" {
+		t.Fatalf("pulled %v, want [python:3.12-alpine]", pulled)
+	}
+}
+
+func TestCreateReportsPullFailure(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.mu.Lock()
+	f.missingImages["private/nope:1"] = true
+	f.pullError = "pull access denied for private/nope"
+	f.mu.Unlock()
+
+	b := f.backend(t)
+	if _, err := b.Create(context.Background(), daemon.ContainerSpec{Image: "private/nope:1", MemoryMB: 64}); err == nil {
+		t.Fatal("create succeeded, want the pull failure")
+	}
+}
+
+func TestCreateDoesNotPullAnImageThatExists(t *testing.T) {
+	f := newFakeDaemon(t)
+	b := f.backend(t)
+	if _, err := b.Create(context.Background(), daemon.ContainerSpec{Image: "alpine:3.20", MemoryMB: 64}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	f.mu.Lock()
+	pulled := len(f.pulled)
+	f.mu.Unlock()
+	if pulled != 0 {
+		t.Errorf("%d pulls for a present image, want 0", pulled)
+	}
+}
+
 func TestCreateRetriesAfterNameConflict(t *testing.T) {
 	f := newFakeDaemon(t)
 	// A leftover container already owns the name.

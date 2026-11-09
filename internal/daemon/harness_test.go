@@ -113,7 +113,6 @@ func (h *harness) waitCompleted(sandboxID, executionID string) daemon.Execution 
 	return daemon.Execution{}
 }
 
-
 // memEcho prints its arguments, one per line.
 func memEcho(_ context.Context, args []string) (string, string, int) {
 	out := ""

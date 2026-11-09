@@ -82,6 +82,15 @@ func (b *Backend) Create(ctx context.Context, spec daemon.ContainerSpec) (string
 	}
 
 	id, err := b.api.ContainerCreate(ctx, spec.Name, cfg)
+	if err != nil && dockerapi.IsNoSuchImage(err) {
+		// The Engine API's create does not pull, unlike `docker run`. A clean
+		// host therefore fails every create until the image is fetched, which
+		// is exactly the difference between a developer machine and CI.
+		if pullErr := b.api.PullImage(ctx, spec.Image); pullErr != nil {
+			return "", fmt.Errorf("dockerbackend: pull %s: %w", spec.Image, pullErr)
+		}
+		id, err = b.api.ContainerCreate(ctx, spec.Name, cfg)
+	}
 	if err != nil && dockerapi.IsConflict(err) && spec.Name != "" {
 		// A leftover container still owns the name. The sandbox ID is unique,
 		// so this is a restart artefact; remove it and retry once.
