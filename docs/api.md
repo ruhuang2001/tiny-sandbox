@@ -257,10 +257,11 @@ Container removal is best effort in `terminateLocked`. A sandbox can be recorded
 as `killed` even if Docker removal fails; the error is not returned by the delete
 endpoint and a repeated delete of that killed record returns the stored record
 without retrying removal. A removal that fails or exceeds the server's backend
-call timeout is scheduled for the periodic reaper, which retries it until the
-container is gone, so a slow runtime cannot leave a killed sandbox's workload
-running indefinitely. Startup cleanup with the same owner label remains the
-recovery path for a restart with pending retries.
+call timeout is recorded for the periodic reaper, which retries it on later
+beats with a bounded budget per pass, so a slow runtime does not starve timeout
+and eviction checks. Retries continue for the life of the process, but nothing
+guarantees that a runtime that keeps failing removes the container; startup
+cleanup with the same owner label is the fallback.
 
 ## Server behavior
 

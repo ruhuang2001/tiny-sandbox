@@ -95,14 +95,15 @@ type Sandboxes struct {
 	// retryMu guards retryIDs: containers the runtime would not remove. It is
 	// a separate lock so a retry pass never waits on the store lock, and the
 	// reaper never waits on a removal it is itself scheduling.
-	retryMu  sync.Mutex
-	retryIDs map[string]struct{}
+	retryMu            sync.Mutex
+	retryIDs           map[string]struct{}
+	removalPassRunning bool
 }
 
-// maxRemovalRetries bounds the removal retry set. A runtime that cannot remove
-// this many containers has a problem the retry loop cannot solve; startup
-// cleanup still catches whatever is dropped.
-const maxRemovalRetries = 256
+// removalPassBudget bounds one removal-retry pass as a whole, so a hung runtime
+// cannot let the pass starve timeout and eviction checks by holding its
+// goroutine for one backend timeout per queued container.
+const removalPassBudget = 2 * time.Second
 
 // New returns Sandboxes backed by backend.
 func New(backend Backend, opts ...Option) *Sandboxes {

@@ -116,37 +116,90 @@ func (s *Sandboxes) liveness(ctx context.Context, containerID string) (Liveness,
 // stored record without retrying. Without this, a slow runtime would turn a
 // bounded timeout into a container that outlives the deadline it was killed
 // for, until the next process restart.
+//
+// The pass runs on its own goroutine with an overall budget, not inline in the
+// reaper tick. A hung runtime makes each Remove spend its whole timeout, and a
+// long queue would then delay timeout enforcement and eviction detection for
+// every healthy sandbox. A pass that overruns its budget simply stops and the
+// rest is retried on the next beat.
 func (s *Sandboxes) retryRemovals(ctx context.Context) {
-	s.retryMu.Lock()
-	ids := make([]string, 0, len(s.retryIDs))
-	for id := range s.retryIDs {
-		ids = append(ids, id)
+	if !s.tryStartRemovalPass() {
+		return
 	}
-	s.retryMu.Unlock()
+	passCtx, cancel := context.WithTimeout(ctx, removalPassBudget)
+	go func() {
+		defer cancel()
+		defer s.finishRemovalPass()
+		s.runRemovalPass(passCtx)
+	}()
+}
 
-	for _, id := range ids {
-		callCtx, cancel := backendCtx(ctx)
-		err := s.backend.Remove(callCtx, id)
-		cancel()
+// runRemovalPass makes one bounded Remove call per queued container until the
+// pass budget runs out.
+func (s *Sandboxes) runRemovalPass(ctx context.Context) {
+	for _, id := range s.pendingRemovals() {
+		if ctx.Err() != nil {
+			return
+		}
+		err := s.removeBounded(ctx, id)
 		// ErrNotFound is success here: the container is gone either way.
 		if err == nil || errors.Is(err, ErrNotFound) {
-			s.retryMu.Lock()
-			delete(s.retryIDs, id)
-			s.retryMu.Unlock()
+			s.forgetRemoval(id)
 		}
 	}
 }
 
-// scheduleRemoval remembers a container the runtime would not remove. The set
-// is bounded: a runtime that cannot remove several hundred containers has a
-// problem the retry loop cannot solve, and startup cleanup still catches what
-// is dropped here.
+// pendingRemovals snapshots the ids waiting for a retry.
+func (s *Sandboxes) pendingRemovals() []string {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	ids := make([]string, 0, len(s.retryIDs))
+	for id := range s.retryIDs {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// removeBounded calls Remove with the smaller of the per-call bound and the
+// time the pass has left.
+func (s *Sandboxes) removeBounded(ctx context.Context, containerID string) error {
+	callCtx, cancel := context.WithTimeout(ctx, BackendCallTimeout)
+	defer cancel()
+	return s.backend.Remove(callCtx, containerID)
+}
+
+// forgetRemoval drops a container that is gone.
+func (s *Sandboxes) forgetRemoval(containerID string) {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	delete(s.retryIDs, containerID)
+}
+
+// tryStartRemovalPass claims the single removal-pass slot, so overlapping
+// ticks never run two passes at once.
+func (s *Sandboxes) tryStartRemovalPass() bool {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	if s.removalPassRunning {
+		return false
+	}
+	s.removalPassRunning = true
+	return true
+}
+
+func (s *Sandboxes) finishRemovalPass() {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	s.removalPassRunning = false
+}
+
+// scheduleRemoval remembers a container the runtime would not remove. Nothing
+// is dropped: a container that outlived a removal has to be retried or it runs
+// until the process restarts, and the set is bounded only by the number of
+// sandboxes this process has killed.
 func (s *Sandboxes) scheduleRemoval(containerID string) {
 	s.retryMu.Lock()
 	defer s.retryMu.Unlock()
-	if len(s.retryIDs) >= maxRemovalRetries {
-		return
-	}
 	s.retryIDs[containerID] = struct{}{}
 }
 

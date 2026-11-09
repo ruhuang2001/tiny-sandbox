@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -317,6 +318,9 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 	// the ping interval, or a terminal event that arrives just after a batch
 	// waits a full 15 seconds.
 	var writeMu sync.Mutex
+	// write sends one frame and flushes it, under the lock. Callers that send
+	// a whole batch build the frames first and call this once, so a replay
+	// of a long log costs one write and one flush instead of one per event.
 	write := func(data []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
@@ -360,12 +364,18 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		for _, ev := range events {
-			data, err := renderEvent(ev)
-			if err != nil {
-				return
+		if len(events) > 0 {
+			// One buffer, one write, one flush per batch: replaying a long
+			// log would otherwise cost a syscall and a packet per event.
+			var batch bytes.Buffer
+			for _, ev := range events {
+				data, err := renderEvent(ev)
+				if err != nil {
+					return
+				}
+				batch.Write(data)
 			}
-			if err := write(data); err != nil {
+			if err := write(batch.Bytes()); err != nil {
 				return
 			}
 		}
