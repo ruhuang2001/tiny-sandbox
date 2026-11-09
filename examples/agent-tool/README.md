@@ -142,7 +142,11 @@ from JSON.
 | unavailable | Busy sandbox or another service / SDK error not mapped separately | Check service, configuration, and authentication; apply the application's retry policy |
 
 Branch on outcome instead of guessing the cause from an error message.
-A hint is advisory; it does not trigger automatic retries.
+A hint is advisory; it does not trigger automatic retries. `ErrCancelUnconfirmed`
+is currently mapped to `unavailable`, and the serialized result does not retain
+the SDK's execution IDs or idempotency key. If your application needs to reconcile
+uncertain executions, retain that context at the SDK layer and verify cleanup
+before retrying work that may have side effects.
 
 ## Reuse files across calls
 

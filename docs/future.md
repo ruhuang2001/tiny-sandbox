@@ -1,6 +1,6 @@
-# Beyond the demo
+# Future directions
 
-The demo covers lifecycle, execution and streaming, error classification, and CLI diagnostics. Everything below is a design direction, **not implemented**. Each entry names the main cost, because that cost is usually the reason the feature is not in the demo.
+The current implementation covers sandbox lifecycle, execution, streaming, error classification, and CLI diagnostics. The capabilities below are **not implemented**; they describe potential extensions rather than committed delivery plans.
 
 | Capability | Next design step | Main cost or risk |
 |---|---|---|
@@ -10,8 +10,8 @@ The demo covers lifecycle, execution and streaming, error classification, and CL
 | Multi-tenancy and billing | Tenant-scoped scheduling, quotas, metering, and explicit resource termination | Noisy neighbours, authorization, billing correctness |
 | Browser automation | Isolated browser images, network controls, artifact capture, session timeouts | Larger attack surface, heavier resource use |
 | More SDK languages | Generate from the stable OpenAPI core, then test idiomatic errors, streaming, and cancellation per language | Semantic drift across Python, TypeScript, and Go |
-| Kubernetes or microVM backend | Introduce a runtime interface once Docker behaviour and the contract are stable | Pause, OOM, eviction, and network semantics differ |
-| Durable control plane | Persist records, reconcile with the runtime on boot, resume after restart | The reconciler is the interesting part and is real engineering |
-| Bounded output in storage | Quota-backed stdout/stderr and replay buffers, sharded fetches for large results, an explicit over-limit error | Silent truncation breaks the contract; the demo's in-memory bound is a stopgap |
+| Kubernetes or microVM backend | Implement the existing `daemon.Backend` interface and verify lifecycle and execution semantics against the new runtime | Pause, OOM, eviction, and network semantics differ |
+| Durable control plane | Persist records, reconcile with the runtime on boot, resume after restart | Recovery after partial failures, orphan cleanup, and event continuity |
+| Persistent output storage | Quota-backed stdout/stderr and replay buffers, sharded fetches for large results, an explicit over-limit error | Preserve explicit truncation signals and retention limits across restarts |
 
 The entry gate for any capability is an end-to-end scenario that exposes both its value and its failure mode. Matching method names do not prove that two runtime backends behave alike; a pause in particular must state whether it preserves memory, files, or both.

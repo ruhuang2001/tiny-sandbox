@@ -4,8 +4,8 @@ Status: normative. Contract for `sandboxctl`. It is a thin layer over the [Go SD
 
 ## Global behavior
 
-- Flags `--domain` and `--api-key` override `SANDBOX_DOMAIN` and `SANDBOX_API_KEY`.
-- **stdout carries only command output** (and the result of `inspect`, `list`, `version`). Everything else, including progress and status lines, goes to stderr. This keeps `sandboxctl run -- cmd > out.txt` clean.
+- Global flags `--domain` and `--api-key` go before the subcommand. Nonempty values override `SANDBOX_DOMAIN` and `SANDBOX_API_KEY`, for example `sandboxctl --domain http://127.0.0.1:8080 list`.
+- Execution stdout goes to stdout; execution stderr, progress, and status lines go to stderr. Inspection, lifecycle, list, version, help, and doctor results use stdout. `sandboxctl run -- cmd > out.txt` captures the command's stdout only.
 - Errors are printed to stderr as `sandboxctl: <message>`, followed by `hint: <next step>` when one is known.
 - Ctrl+C or SIGTERM cancels the context; commands that wait on an execution cancel it remotely through the SDK.
 
@@ -17,14 +17,18 @@ Status: normative. Contract for `sandboxctl`. It is a thin layer over the [Go SD
 | `run [flags] -- CMD [ARG...]` | create a sandbox (or use `--sandbox ID`), start `CMD`, stream output, print the final status |
 | `run [flags] -- code 'PYTHON'` | shorthand for `python3 -c 'PYTHON'`; a newly created sandbox uses `python:3.12-alpine` unless `--image` is given |
 | `attach SANDBOX EXECUTION` | stream an existing execution from the beginning; Ctrl+C cancels it |
-| `logs SANDBOX EXECUTION` | print retained stdout/stderr and the final status without streaming |
+| `logs SANDBOX EXECUTION` | print retained stdout/stderr and the current status without streaming |
 | `inspect SANDBOX` | print the sandbox |
 | `list` | print sandboxes, one per line: `ID STATE IMAGE CREATED` |
 | `pause SANDBOX`, `resume SANDBOX`, `kill SANDBOX` | lifecycle operations; print the resulting sandbox |
 | `version` | print the build version (injected with `-ldflags`) |
 | `help` | usage |
 
-`run` flags: `--sandbox ID`, `--image`, `--memory MB`, `--timeout S`, `--timeout-action kill|pause`, `--idle-timeout S`, `--idle-action kill|pause`, `--rm` (kill the sandbox after the command). Creation flags together with `--sandbox` are an error.
+`run` flags: `--sandbox ID`, `--image`, `--memory MB`, `--timeout S`, `--timeout-action kill|pause`, `--idle-timeout S`, `--idle-action kill|pause`, `--rm` (request cleanup of a sandbox created by this invocation). Creation flags together with `--sandbox` are an error. `--rm` does not remove a sandbox supplied through `--sandbox`. Cleanup errors are currently ignored; verify remote state when cleanup must be confirmed.
+
+Numeric creation flags are forwarded only when positive. In particular,
+`--timeout 0` does not disable the default lifetime; use the SDK or HTTP API
+with an explicit zero to disable it.
 
 ## Status lines (stderr)
 
@@ -36,7 +40,7 @@ execution: exe_456
 execution exe_456: completed (exited), exit 0
 ```
 
-The first line reads `sandbox: sbx_123` when `--sandbox` was given. The last line is printed whenever the final execution is known, including after Ctrl+C. Without `--rm`, a sandbox created by `run` is kept for inspection, except when the start itself was canceled: then the CLI kills the sandbox it just created.
+The first line reads `sandbox: sbx_123` when `--sandbox` was given. The last line is printed whenever the final execution is known, including after Ctrl+C. If streaming fails without a final result, the CLI prints the initial running snapshot instead. Without `--rm`, a sandbox created by `run` is kept for inspection, except when the start itself was canceled: then the CLI kills the sandbox it just created.
 
 ## Exit codes
 
@@ -44,7 +48,8 @@ The first line reads `sandbox: sbx_123` when `--sandbox` was given. The last lin
 |---|---|
 | success | 0 |
 | command exited with code 1–125 | that code |
-| canceled by Ctrl+C / SIGTERM | 130 |
+| cancellation reported as `ErrCanceled` | 130 |
+| invalid usage or flag parsing | 2 |
 | anything else (API errors, OOM, timeout, eviction, exit codes 126 and above) | 1 |
 
 Exit codes 126 and 127 are not passed through. In shell convention they mean
@@ -67,10 +72,19 @@ other non-command failure.
 
 ## doctor
 
-Prints one line per check to stdout as `<check>: ok|fail (<detail>)`, then `Ready` or the hints for failed checks. Exit 0 only if every check passed.
+Prints checks to stdout as `<check>: ok`, `<check>: ok (<detail>)`, or
+`<check>: fail (<detail>)`. Remote Docker checks print `docker: skipped (remote domain)`. The summary is `Ready` or `not ready`; failure hints go to stderr.
+Exit 0 only if all applicable checks passed.
 
 1. `config`: domain and whether an API key is set (never print the key).
 2. `health`: `GET /healthz` within 3 seconds.
-3. `auth`: `GET` a random nonexistent sandbox; `404` means authorized, `401` means the key is wrong or missing.
+3. `auth`: `GET` the fixed probe ID `sbx_doctor_probe`; `404` means authorized, `401` means the key is wrong or missing.
 4. `docker`: only for a local domain (loopback or `localhost`); `docker info` reachable.
 5. `sandbox`: create a sandbox, run `echo doctor-ok`, check the output, kill the sandbox.
+
+## Implementation references
+
+- [Global flags, output, and exit codes](../cmd/sandboxctl/main.go).
+- [Run flags and cleanup](../cmd/sandboxctl/run.go).
+- [Attach, logs, and lifecycle commands](../cmd/sandboxctl/ops.go).
+- [Doctor checks](../cmd/sandboxctl/doctor.go).

@@ -1,15 +1,15 @@
-# Competitor SDK review
+# SDK design comparison
 
 What this document is: a comparison of the client surfaces of E2B and Daytona
 against `sandbox-go`, and the decisions that follow from it. The purpose is to
 decide **what to stay compatible with and what to deliberately do differently**,
 not to rank the products.
 
-## Method, and what was actually run
+## Scope and recorded inspection
 
-The two SDKs were installed and read in a clean virtualenv; every signature and
-constant below was extracted with `inspect` from the installed package, not from
-documentation or memory.
+This document records an earlier installed-source inspection of the versions
+below. It is a version-specific design reference, not a current feature matrix
+or a fresh verification of those packages.
 
 ```text
 python 3.15.0
@@ -86,10 +86,10 @@ command), a server-side event log with `Last-Event-ID`, and a
 
 ### Kept compatible
 
-1. **Seconds everywhere, named with their unit.** E2B and Daytona both use
-   seconds; a client migrating from either should not have to convert. We go one
-   step further and put the unit in the field name (`timeout_seconds`), because
-   milliseconds and seconds are the single most common cross-SDK bug.
+1. **Explicit timeout units.** The command execution APIs compared here use
+   seconds. Lifecycle settings can use other units, such as Daytona's
+   `ttl_minutes`; migrations must check each field. We go one
+   step further and put the unit in the field name (`timeout_seconds`), to make conversions explicit.
 2. **A result object that always carries output.** `CommandResult` and
    `ExecuteResponse` both attach stdout/stderr to the outcome. We do the same,
    including on the error path.
@@ -126,8 +126,8 @@ command), a server-side event log with `Last-Event-ID`, and a
    exposes an OOM-specific outcome: the string `oom` appears in none of E2B's 25
    or Daytona's 41 exception names. Daytona does report one non-exit-code
    termination — `DaytonaSpotEvictedError`, for a spot instance going away —
-   but not OOM. Both leave
-   the caller to interpret 137. We classify `canceled`, `timeout`, `oom`,
+   but not OOM. The inspected exception names alone do not establish what runtime
+   diagnostics either service makes available. We classify `canceled`, `timeout`, `oom`,
    `evicted`, `exited` on the server, in a fixed precedence, because the exit
    code alone cannot distinguish them. This is the sharpest difference in the
    comparison and the one this project exists to make.
@@ -167,7 +167,7 @@ command), a server-side event log with `Last-Event-ID`, and a
 
 ```sh
 python3 -m venv /tmp/compvenv
-/tmp/compvenv/bin/pip install e2b daytona
+/tmp/compvenv/bin/pip install e2b==2.63.0 daytona==0.231.0
 /tmp/compvenv/bin/python - <<'PY'
 import inspect, e2b
 from e2b import Sandbox

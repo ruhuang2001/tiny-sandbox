@@ -1,6 +1,6 @@
 # Design
 
-tiny-sandbox is a small reference implementation of a code-execution sandbox for AI agents: a Go SDK, a CLI, and a Docker-backed server. It is not a production isolation service.
+tiny-sandbox provides Docker-backed code execution for AI agents through a Go SDK, CLI, and HTTP API. It uses in-memory state and does not provide hardened isolation or multi-tenant access controls.
 
 This document is the design source for the implementation. `api.md`, `sdk.md` and `cli.md` are normative contracts; where this document disagrees with them, they win.
 
@@ -29,20 +29,6 @@ This project answers those questions with working code and tests rather than pro
 
 Templates, snapshots, volumes, secrets, multi-tenancy, billing, browser automation, non-Go SDKs, durable server state, and hardened isolation (microVMs, gVisor). Each has an extension point and a design sketch in [future.md](future.md).
 
-## Precedents
-
-Two earlier builds of this same demo exist. This design takes the parts of each that survived their own verification, and drops the parts that did not.
-
-| Concern | Earlier build A | Earlier build B | This design |
-|---|---|---|---|
-| Server backend | Hand-written Docker Engine API over a unix socket | `docker` CLI via string-built argv | Engine API (A). No shell quoting, injectable faults, unit-testable parsers |
-| Server testability | `Backend` interface with an in-memory implementation | None; Docker required for every path | Interface plus in-memory backend (A) |
-| Evidence | Script exit codes only | `artifacts/<stage>/` with SSE transcripts, cgroup counters, JSON results | Artifacts (B), one directory per stage, referenced from `progress.md` |
-| Coverage | `go test` coverage, 60% gate | E2E-derived coverage via `-coverpkg`, 74.7% | Both, merged into one number with a 70% gate |
-| Contract | `api/openapi.yaml` alone | `go:embed` so the spec ships in the binary | `go:embed` plus a test that cross-checks routes against the spec |
-| Output bounds | 2 MiB / 2000 events | Unbounded | 1 MiB / 4096 events, a `truncated` event, and `output_truncated` in the contract |
-| Exec package layout | One package per concern | 472-line `main.go` CLI, 442-line `execution.go` | Split by command and by concern |
-
 ## Architecture
 
 ```text
@@ -59,7 +45,7 @@ sandboxctl / Go application
    one container per sandbox
 ```
 
-Dependency direction is strict: `daemon` knows only the `Backend` interface and the state machine; `dockerbackend` knows only `dockerapi`; `dockerapi` knows only HTTP over the socket. Nothing above `daemon` knows Docker exists.
+The daemon depends on a `Backend` interface rather than Docker. `dockerbackend` implements that interface using `dockerapi`, which handles the Docker Engine HTTP protocol. `sandboxd` wires these packages together; the SDK uses the public HTTP API. The CLI uses the SDK, with direct health and local Docker checks in `doctor`.
 
 ```
 cmd/sandboxd/            main, flags, wiring
@@ -68,7 +54,7 @@ internal/daemon/         state machine, execution engine, classification, HTTP h
 internal/dockerapi/      minimal Engine API client: create, start, exec, inspect, pause, kill
 internal/dockerbackend/  Backend implementation over dockerapi; cgroup reads
 api/                     openapi.yaml plus contract.go with go:embed
-sandbox-go/              SDK: client, sandbox, exec, stream, retry, errors, files
+sandbox-go/              SDK: client, sandbox and file methods, exec, stream, retry, errors
 examples/agent-tool/     the SDK used as an agent tool function (built and tested in CI)
 ```
 
@@ -80,7 +66,7 @@ examples/agent-tool/     the SDK used as an agent tool function (built and teste
 - `timeout_seconds` (default 300) counts from creation. `idle_timeout_seconds` (default 0, disabled) counts while there is no running execution and no open event stream.
 - Each timeout selects `kill` or `pause`. When the lifetime timeout pauses, a resume starts a fresh interval of the same length; otherwise an auto-resume would immediately expire again.
 - Starting an execution in a paused sandbox resumes it first.
-- A single reaper performs all timeout transitions; reads never change state. The store takes an injectable clock, so timeout tests are deterministic.
+- A single reaper performs timeout transitions; ordinary reads do not apply timeouts. File access can resume a paused sandbox, and requests may detect external eviction. The store takes an injectable clock, so timeout tests are deterministic.
 - Pause uses Docker pause, which freezes the container's cgroup. Process memory is retained and a paused process continues from the same point after resume. A filesystem commit or snapshot is a different thing: it keeps files, not running processes.
 
 ### Executions and streaming
@@ -92,12 +78,123 @@ examples/agent-tool/     the SDK used as an agent tool function (built and teste
 - `Last-Event-ID` replays only later events; the SDK also de-duplicates by ID. Closing a stream never cancels the execution.
 - The blocking `Exec` call is a projection of the same stream, so there is one source of truth for output.
 
+#### Execution and stream recovery
+
+The sandbox already exists in this flow. A dropped SSE connection does not
+stop the command; the SDK reconnects to the same execution within its retry
+budget. Replay covers retained events: output beyond the configured limits
+is reported through `truncated` and `output_truncated`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as Application / CLI
+    participant SDK as Go SDK
+    participant Server as sandboxd
+    participant Runtime as Docker backend
+
+    Caller->>SDK: ExecStream(ctx, sandboxID, command, onEvent)
+    SDK->>Server: POST executions (command, idempotency_key)
+    Server->>Runtime: Start command in its own process group
+    Runtime-->>Server: Process handle
+    Server-->>SDK: Execution ID
+    SDK->>Server: GET execution events (SSE)
+    Runtime-->>Server: stdout / stderr
+    Server->>Server: Append output with increasing event IDs
+    Server-->>SDK: Output events through ID N
+    SDK-->>Caller: onEvent(output)
+
+    opt Connection drops before complete
+        Note over SDK,Server: Execution continues independently of the connection
+        Runtime-->>Server: More output
+        Server->>Server: Retain events for replay
+        SDK->>SDK: Back off within retry budget
+        SDK->>Server: GET events, Last-Event-ID: N
+        Server-->>SDK: Retained events after N, then live events
+        SDK->>SDK: Discard IDs already delivered
+        SDK-->>Caller: onEvent(output)
+    end
+
+    Runtime-->>Server: Process exits and output streams close
+    Server->>Server: Classify outcome and append complete event
+    Server-->>SDK: complete (execution and retained output)
+    SDK-->>Caller: onEvent(complete), then execution and outcome error
+```
+
+Implementation: [SDK streaming](../sandbox-go/stream.go),
+[execution engine](../internal/daemon/engine.go), and
+[event retention](../internal/daemon/events.go).
+
 ### Cancellation
 
-- Cancellation is an explicit request: `POST .../executions/{execution_id}/cancel`. The server terminates the command's process group, including from the paused state, and confirms only after the processes are gone.
+- Cancellation is an explicit request: `POST .../executions/{execution_id}/cancel`. The server terminates the command's process group, including from the paused state. The normal path waits for completion; the bounded container-removal fallback can return a nonterminal snapshot, as described in [implementation limits](api.md#implementation-limits).
 - In the SDK, canceling the caller's context triggers that request with a fresh, short-lived context, because the original context can no longer carry a request.
 - If the caller cancels while an execution start is in flight, the SDK cannot know whether the server accepted it. It repeats the start with the same idempotency key to learn the execution ID, then cancels it. If that recovery fails, it returns a `cancel_unconfirmed` error carrying the key, so nothing runs unnoticed.
 - The CLI never calls HTTP directly except for `doctor`'s health probe. Earlier builds had a CLI path that bypassed the SDK's start-recovery logic and leaked a running command; the SDK is the only client of the HTTP layer.
+
+#### Cancellation and process cleanup
+
+This flow starts while the SDK is waiting on a running execution. The SDK
+uses a fresh five-second context for the cancel request. The server's
+default signal grace period is two seconds; if termination is still
+unconfirmed after escalation, it falls back to removing the container.
+The client can exhaust its own deadline before server cleanup finishes,
+so `cancel_unconfirmed` must not be treated as confirmed termination. The
+error branch can occur at any point during the remote cleanup shown below.
+A received response can contain a nonterminal snapshot after fallback; the
+SDK does not validate terminal state before returning `ErrCanceled`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as Application / CLI
+    participant SDK as Go SDK
+    participant Server as sandboxd
+    participant Runtime as Docker backend
+    participant Group as Command process group
+
+    Caller->>SDK: Cancel context (for example, Ctrl+C)
+    SDK->>SDK: Create fresh context with 5-second timeout
+    SDK->>Server: POST execution cancel
+    opt Sandbox is paused
+        Server->>Runtime: Unpause container before signaling
+    end
+    Server->>Server: Record canceled intent before signaling
+    Server->>Runtime: Signal process group
+    Runtime->>Group: SIGTERM
+    opt Execution not complete after grace period
+        Server->>Runtime: Escalate termination
+        Runtime->>Group: SIGKILL
+    end
+    opt Termination still unconfirmed when wait ends
+        Server->>Runtime: Remove container as fallback
+        Note over Server,Runtime: Sandbox becomes killed
+    end
+    opt Process exit is observed within the wait
+        Group-->>Runtime: Exit and close output streams
+        Runtime-->>Server: Exit status and drained output
+        Server->>Server: Finalize execution with canceled intent
+    end
+    alt SDK receives cancellation response
+        Server-->>SDK: Execution snapshot
+        SDK-->>Caller: Snapshot and ErrCanceled (check execution state)
+    else Request fails or SDK deadline expires
+        SDK-->>Caller: ErrCancelUnconfirmed with execution ID
+        Note over Caller,Server: Cleanup may continue, verify the remote outcome
+    end
+```
+
+If cancellation happens before the start response supplies an execution ID,
+the SDK first repeats the start with the **same idempotency key** under a
+fresh five-second context, then cancels the returned execution. Both steps
+share that deadline. A failed recovery returns `ErrCancelUnconfirmed` with
+the key and, when known, the execution. An already completed execution is
+returned unchanged by the cancellation endpoint.
+
+Implementation: [start recovery](../sandbox-go/exec.go),
+[SDK cancellation](../sandbox-go/stream.go),
+[server cancellation](../internal/daemon/engine.go), and
+[process-group signals](../internal/dockerbackend/process.go).
 
 ### Termination reasons
 
@@ -109,15 +206,26 @@ examples/agent-tool/     the SDK used as an agent tool function (built and teste
 | `oom` | the kernel OOM killer stopped the command |
 | `evicted` | the container disappeared or was stopped externally |
 
-Classification order is fixed: recorded intent (`canceled`, `timeout`) first, then a positive delta in the cgroup `oom_kill` counter, then container liveness, then the exit code. Exit 137 alone never means OOM: an explicit `kill -9`, an eviction, and a runtime stop all produce 137.
+The execution classifier checks the first recorded intent (`canceled` or `timeout`), then a positive delta in the cgroup `oom_kill` counter, container liveness, and the exit code. The periodic eviction sweep can also finalize an execution directly. Exit 137 alone never means OOM: an explicit `kill -9`, an eviction, and a runtime stop all produce 137.
 
-An earlier build misclassified an externally stopped container as `exited` because `docker inspect` intermittently reported a lowercase `no such object` before the container record settled. The current design checks the exact container list instead of `inspect`, and for an ambiguous 137 it samples liveness until the state settles or a two-second budget runs out, deciding on the last observation: the state can be stale in either direction — briefly missing, or briefly still `running` right after an external kill — so neither a single "not running" nor a single "running" answer decides. The wait ends early only on two consecutive `stopped` answers, which is a state that cannot be stale; `missing` and `running` never end it early, because each is the race the window exists for. The budget is a time, not a sample count, because the lag this covers is a property of the runtime, not of the daemon: a local daemon settles the record 75–134 ms after `docker kill` returns, while a loaded CI runner exceeded the earlier five-sample window. Both races are covered by unit tests, one of them found by the end-to-end suite on a slow runner.
+Docker container records can briefly be missing or still report running after
+an external stop. For exit 137 with no recorded intent or OOM delta, the
+classifier takes up to 40 samples separated by 50 ms and decides from the
+last successful observation. It can stop early after at least three samples
+when the current and previous successful observations are both stopped.
+Backend-call time is additional, so this is not a hard two-second deadline.
+If every liveness read fails, it classifies the execution as evicted.
+
+The periodic eviction sweep can finalize an execution independently of this
+classifier. See [implementation limits](api.md#implementation-limits) for
+cleanup behavior when the runtime fails.
+
 
 ### Retries
 
 - Retry candidates: transport errors before a complete response, truncated response bodies, and status 429, 500, 502, 503, 504.
 - Safe to repeat: `GET`, `DELETE`, `PUT` (files), pause, resume, cancel, and execution starts carrying an idempotency key. `POST /v1/sandboxes` is attempted exactly once.
-- Backoff: `min(2s, 200ms * 2^attempt)` with full jitter; a `Retry-After` header overrides the computed delay. The SSE reconnect loop uses the same policy and resets its attempt counter whenever a new event arrives.
+- For ordinary requests, the backoff cap is `min(2s, 200ms * 2^attempt)` and the delay is sampled uniformly from half that cap to the cap. A positive integer `Retry-After` value overrides it. SSE reconnects use the same backoff function; see [SDK streaming limitations](sdk.md#current-streaming-limitations) for differences in retry accounting and header handling.
 - Nothing is retried after the context is done.
 
 ### SDK and CLI
@@ -130,7 +238,7 @@ An earlier build misclassified an externally stopped container as `exited` becau
 
 ### Server state
 
-State lives in memory. A restart forgets sandboxes while Docker keeps their containers, so the server removes containers carrying its own label on startup and on shutdown, and the end-to-end suite asserts the container list is empty afterwards. Persistence and a boot-time reconciler are the interesting parts of a real service and are deliberately out of scope.
+State lives in memory. On startup, the server attempts to remove containers carrying its own owner label (`tiny-sandbox.owner=<listen address>`). Shutdown stops the HTTP server but does not itself remove those containers; startup cleanup depends on reusing the same listen address. The end-to-end harness performs its own container cleanup. Durable state and runtime reconciliation are described in [future directions](future.md).
 
 ## Verification
 
@@ -144,9 +252,9 @@ Three layers, each answering a different question:
 
 Rules:
 
-- Every layer must exist. A build with a passing end-to-end suite but no unit tests cannot regress the state machine; a build with unit tests but no artifacts cannot be audited.
+- The existing suite includes unit, contract, and end-to-end checks. Prefer real-Docker end-to-end scenarios for new behavior changes, with repeatable evidence. See [Contributing](../CONTRIBUTING.md).
 - Coverage is measured twice: `go test -coverprofile` for the unit and contract layers, and `-coverpkg` counted during the end-to-end run for the Docker backend and CLI. CI merges both profiles and gates on the merged number (70%).
-- The end-to-end suite writes evidence under `artifacts/<stage>/`: the commands run, raw SSE transcripts, cgroup counters, JSON responses, server logs, and the final container list. `progress.md` records conclusions and links, not pasted logs.
+- The end-to-end suite writes evidence under `artifacts/<stage>/`: the commands run, raw SSE transcripts, cgroup counters, JSON responses, server logs, and the final container list. These artifacts are generated locally or uploaded by CI; they are not committed.
 - `api/openapi.yaml` and the router must not drift: a test parses the spec's path set and compares it both ways with the routes the server registers.
 - Anything not actually run is labelled `not run` in the documentation. Local `act` runs are not reported as remote CI.
 
@@ -161,7 +269,7 @@ One workflow, four jobs:
 | `build` | `go build ./...`, both commands, the example, `goreleaser check` |
 | `e2e` | Docker-backed suite with coverage instrumentation; uploads `artifacts/`; asserts no containers remain |
 
-Releases are built by GoReleaser from a tag: six platform archives plus a checksum file. Versioning follows semantic versioning at the repository level; CLI flags, environment variables, JSON fields, error types, timeout units, and SSE event semantics are all part of the compatibility surface. [versioning.md](versioning.md) holds the details, and [competitors.md](competitors.md)
+CI builds GoReleaser snapshots: six platform archives plus a checksum file. There is no automatic tag-release workflow. Versioning follows semantic versioning at the repository level; CLI flags, environment variables, JSON fields, error types, timeout units, and SSE event semantics are all part of the compatibility surface. [versioning.md](versioning.md) holds the details, and [competitors.md](competitors.md)
 records which parts of the E2B and Daytona client surfaces this design keeps
 compatible and which it deliberately changes.
 
@@ -176,16 +284,9 @@ Recorded because earlier builds hit them, not as hypotheticals:
 5. **Pause must be measured, not asserted.** Prove it with a counter that advances across pause and resume, not with the state field.
 6. **Documentation bloat.** Evidence goes in `artifacts/`; prose stays readable.
 
-## Roadmap
+## Further reading
 
-Every item below is implemented and verified; `progress.md` links the evidence
-for each stage.
-
-- [x] Contract freeze: `api/openapi.yaml` matches `api.md`; the route-versus-spec test fails first, then passes
-- [x] State machine, timeouts, and classification on the in-memory backend
-- [x] Execution engine, bounded event log, SSE with replay, cancellation
-- [x] Docker backend over the Engine API, cgroup reads, external-stop reconciliation
-- [x] Go SDK: client, sandbox, exec, stream, retry, errors, files
-- [x] CLI: doctor, run, attach, logs, inspect, list, pause, resume, kill, version
-- [x] CI, GoReleaser, README, versioning notes
-- [ ] Interview notes mapped to evidence — the notes themselves live outside this repository
+- [HTTP API](api.md), [Go SDK](sdk.md), and [CLI](cli.md): public contracts and usage.
+- [SDK comparison](competitors.md): version-specific interfaces and tradeoffs.
+- [Future directions](future.md): capabilities outside the current scope.
+- [Contributing](../CONTRIBUTING.md): checks and evidence collection.

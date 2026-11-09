@@ -123,9 +123,9 @@ paths:
       operationId: deleteSandbox
       summary: Kill a sandbox
       description: >-
-        Terminates every process in the sandbox, terminates a running execution
-        with reason canceled, and removes the container. Idempotent: deleting a
-        killed sandbox returns it unchanged.
+        Marks the sandbox killed and records canceled intent for a running
+        execution. Container removal is best effort and failures are not returned.
+        Deleting a killed sandbox returns it unchanged without retrying removal.
       responses:
         '200':
           description: The sandbox, in state killed.
@@ -315,15 +315,16 @@ paths:
       operationId: cancelExecution
       summary: Cancel an execution
       description: >-
-        Terminates the execution's whole process group with SIGTERM, then
-        SIGKILL after 2 seconds, and responds only once the execution is
-        completed. Canceling a completed execution returns it unchanged. If the
-        processes cannot be confirmed gone within 10 seconds the server removes
-        the container, so the sandbox becomes killed with kill_reason
-        requested.
+        Records canceled intent and signals the process group with SIGTERM.
+        Waits up to 2 seconds before SIGKILL, then up to 8 more seconds before
+        best-effort container removal. Backend calls add time and request
+        cancellation can shorten these waits. Removal marks the sandbox killed
+        with kill_reason requested. After removal, waits up to 2 more seconds
+        and returns the latest snapshot, which may remain nonterminal.
+        Canceling an already completed execution returns it unchanged.
       responses:
         '200':
-          description: The execution, in state completed with reason canceled.
+          description: The latest execution snapshot; inspect state to confirm completion.
           content:
             application/json:
               schema:
@@ -356,7 +357,7 @@ paths:
         limit_bytes and sent at most once, and complete carrying the full
         Execution and always sent last. Last-Event-ID replays only events with
         a greater ID, then continues live. The server sends a ping comment
-        every 15 seconds while idle and closes the stream after complete.
+        every 15 seconds while open and closes the stream after complete.
         Closing a stream never affects the execution, and an open stream counts
         as activity for the idle timeout.
       responses:
@@ -397,7 +398,8 @@ paths:
       summary: Read a file
       description: >-
         Returns the raw bytes. The sandbox resumes first if it is paused. A
-        path that is not absolute is an invalid request.
+        path that is not absolute is an invalid request. Files larger than
+        10 MiB are rejected by Docker archive extraction with 502 backend_error.
       responses:
         '200':
           description: The file contents.
@@ -414,8 +416,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
-        '413':
-          $ref: '#/components/responses/PayloadTooLarge'
+        '502':
+          $ref: '#/components/responses/BackendError'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -552,8 +554,8 @@ components:
                 message: idempotency key was used for a different command
     PayloadTooLarge:
       description: >-
-        413 payload_too_large: the request body exceeds 1 MiB, or a file
-        exceeds 10 MiB.
+        413 payload_too_large: the JSON request body exceeds 1 MiB, or a file
+        upload exceeds 10 MiB.
       content:
         application/json:
           schema:
@@ -689,7 +691,7 @@ components:
           format: date-time
           description: >-
             The current lifetime deadline. Null when the lifetime timeout is
-            disabled or the sandbox is killed.
+            disabled, pending, killed, or paused with timeout_action pause.
         kill_reason:
           type: [string, 'null']
           enum: [requested, timeout, idle_timeout, evicted, null]
@@ -753,8 +755,10 @@ components:
           type: [string, 'null']
           enum: [canceled, timeout, oom, evicted, exited, null]
           description: >-
-            Null while running. Precedence: canceled, timeout, oom, evicted,
-            exited. Exit code 137 alone never implies oom.
+            Null while running. The classifier uses the first recorded intent
+            (canceled or timeout), then OOM evidence, container liveness, and exit
+            status. The eviction sweep can also finalize an execution directly
+            as evicted. Exit code 137 alone never implies oom.
         output_truncated:
           type: boolean
           description: >-

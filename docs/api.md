@@ -1,6 +1,6 @@
 # HTTP API
 
-Status: normative. `api/openapi.yaml` must describe exactly this contract; when they disagree, fix one of them in the same change.
+Status: normative. [OpenAPI specification](../api/openapi.yaml) must describe exactly this contract; when they disagree, fix one of them in the same change.
 
 ## Conventions
 
@@ -12,7 +12,8 @@ Status: normative. `api/openapi.yaml` must describe exactly this contract; when 
 
 ## Errors
 
-Every non-2xx response has this body:
+Errors emitted by the API handlers use this body. Router-level errors for
+unknown paths or unsupported methods may use plain text:
 
 ```json
 {"code": "busy", "message": "sandbox sbx_123 is already running execution exe_456"}
@@ -26,7 +27,7 @@ Every non-2xx response has this body:
 | 409 | `invalid_state` | operation not allowed in the sandbox's current state (see transition table) | no |
 | 409 | `busy` | the sandbox already has a running execution | no |
 | 409 | `idempotency_conflict` | idempotency key reused with a different command | no |
-| 413 | `payload_too_large` | request body or file exceeds a limit | no |
+| 413 | `payload_too_large` | JSON request body or file upload exceeds a limit | no |
 | 429 | `rate_limited` | reserved; the reference server does not emit it, clients must handle it | yes |
 | 500 | `internal` | unexpected server error | yes |
 | 502 | `backend_error` | the container runtime failed | yes |
@@ -49,7 +50,7 @@ Clients may honor a `Retry-After` header (seconds) on 429 and 503.
 | `idle_timeout_seconds` | int | default `0` (disabled) |
 | `idle_timeout_action` | string | `kill` (default) or `pause` |
 | `created_at` | string | |
-| `expires_at` | string or null | current lifetime deadline; null when disabled or killed |
+| `expires_at` | string or null | current lifetime deadline; null when disabled, pending, killed, or paused with timeout action `pause` |
 | `kill_reason` | string or null | set when `killed`: `requested`, `timeout`, `idle_timeout`, `evicted` |
 
 ### Execution
@@ -67,7 +68,9 @@ Clients may honor a `Retry-After` header (seconds) on 429 and 503.
 | `started_at` | string | |
 | `finished_at` | string or null | |
 
-Termination reasons, in precedence order (the first that applies wins):
+Termination reasons used by the execution classifier. The first recorded
+termination intent wins; otherwise the classifier checks OOM evidence,
+container liveness, and finally the exit code:
 
 | Reason | Condition |
 |---|---|
@@ -77,7 +80,7 @@ Termination reasons, in precedence order (the first that applies wins):
 | `evicted` | the container stopped or disappeared without the server asking for it |
 | `exited` | the process exited on its own, with any exit code, including 137 |
 
-`canceled` and `timeout` are intents the server records before it acts, so they win over whatever exit status follows. Exit code 137 alone never implies `oom`.
+`canceled` and `timeout` are intents the server records before it acts; a later intent does not replace the first. The periodic eviction sweep can also finalize an execution directly as `evicted` when the container is gone. Exit code 137 alone never implies `oom`.
 
 ## Sandbox lifecycle
 
@@ -112,14 +115,14 @@ Pausing freezes every process in the sandbox, including a running execution, whi
 ### Idle timeout
 
 - A sandbox is idle while it is `running`, has no running execution, and has no open event stream.
-- Idle time is measured from the latest of: the last authenticated request addressing the sandbox, the end of the last execution, the close of the last event stream.
+- The intended activity model includes authenticated requests addressing the sandbox, execution completion, and stream closure. Currently activity is refreshed by sandbox creation, `GET /v1/sandboxes/{sandbox_id}`, successful execution start, execution completion, and event-stream open/close. Other requests do not consistently refresh it; polling execution or file endpoints does not keep an otherwise idle sandbox alive.
 - When idle time reaches `idle_timeout_seconds`, the configured action runs; `kill` sets `kill_reason: idle_timeout`.
 
 ### Eviction
 
-If the container stops or disappears without the server asking, the sandbox becomes `killed` with `kill_reason: evicted` and a running execution ends with reason `evicted`. The server must detect this within 5 seconds, or earlier on the next request addressing the sandbox.
+If the container stops or disappears without the server asking, the sandbox becomes `killed` with `kill_reason: evicted` and a running execution ends with reason `evicted`. The periodic sweep checks live containers on a nominal one-second interval. Requests that encounter a missing container can detect eviction sooner, but ordinary get/list calls do not probe Docker. Five seconds is the intended detection budget, not a hard bound when backend calls block or sandbox locks remain busy.
 
-Timeout transitions are applied by a periodic reaper (at most 1 second between checks). Read requests never change state.
+Timeout transitions are applied by a periodic reaper configured to tick at most one second apart; backend calls and lock contention can delay observation. Ordinary reads do not apply timeouts. File reads can resume a paused sandbox, and requests may detect external eviction.
 
 ## Endpoints
 
@@ -151,7 +154,7 @@ No body. `200` Sandbox. Idempotent per the transition table.
 
 ### `DELETE /v1/sandboxes/{sandbox_id}`
 
-`200` Sandbox in state `killed`. Removes the container. Idempotent.
+`200` Sandbox in state `killed`. Requests container removal on a best-effort basis; removal errors are not returned. Repeating deletion returns the stored killed record without retrying removal.
 
 ### `POST /v1/sandboxes/{sandbox_id}/executions`
 
@@ -162,6 +165,7 @@ No body. `200` Sandbox. Idempotent per the transition table.
 - `command` is required and non-empty.
 - `idempotency_key` is optional, at most 128 characters, scoped to the sandbox.
 - `201` with the new Execution (`state: running`).
+- State validation precedes idempotency lookup: a killed or pending sandbox rejects the start, including a replay; a paused sandbox resumes first.
 - Same key and same command as an existing execution: `200` with that execution, in whatever state it is now. No new process starts.
 - Same key with a different command: `409 idempotency_conflict`.
 - Another execution is running: `409 busy`. One running execution per sandbox keeps container-wide OOM evidence attributable to a single execution.
@@ -176,7 +180,7 @@ No body. `200` Sandbox. Idempotent per the transition table.
 
 ### `POST /v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel`
 
-No body. Terminates the execution's whole process group: SIGTERM, then SIGKILL after 2 seconds. Responds only once the execution is `completed`, with `200` and the Execution (`termination_reason: canceled`). If the processes cannot be confirmed gone within 10 seconds, the server removes the container (the sandbox becomes `killed`, `kill_reason: requested`) so nothing keeps running. Canceling a completed execution returns it unchanged.
+No body. Records canceled intent, sends SIGTERM to the process group, and waits up to 2 seconds for completion before SIGKILL. It then waits up to 8 more seconds before requesting container removal and marking the sandbox `killed` with `kill_reason: requested`. These are wait budgets: backend calls add time, and request cancellation can shorten the waits. After removal, it waits up to 2 more seconds and returns `200` with the latest Execution snapshot, which can still be nonterminal. Canceling an already completed execution returns it unchanged. See [cancellation and removal](#cancellation-and-removal).
 
 ### `GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/events`
 
@@ -214,7 +218,7 @@ data: {"id":"exe_456","state":"completed","exit_code":0,"termination_reason":"ex
 - Event IDs are decimal integers starting at 1 and increasing by 1 per event within an execution.
 - Types: `stdout` and `stderr` carry `{"data": "<chunk>"}`, at most 32 KiB per chunk; `truncated` carries `{"limit_bytes": <n>}` and is sent at most once; `complete` carries the full Execution and is always the last event.
 - `Last-Event-ID: <n>` replays only events with ID greater than `n`, then continues live. A non-integer value is `400 invalid_request`.
-- The server sends a `: ping` comment every 15 seconds while the stream is idle.
+- The server sends a `: ping` comment every 15 seconds while the stream is open, including while output is flowing.
 - The server closes the stream after `complete`. A finished execution replays its events and closes immediately.
 - Closing a stream never affects the execution. An open stream counts as activity for the idle timeout.
 
@@ -225,11 +229,37 @@ data: {"id":"exe_456","state":"completed","exit_code":0,"termination_reason":"ex
 | Retained output per execution (stdout + stderr) | 1 MiB | further output is discarded, one `truncated` event is sent, `output_truncated: true`; the process keeps running |
 | Output events per execution | 4096 | same as above |
 | JSON request body | 1 MiB | `413 payload_too_large` |
-| File upload / download | 10 MiB | `413 payload_too_large` |
+| File upload | 10 MiB | `413 payload_too_large` |
+| File download through Docker | 10 MiB | currently `502 backend_error` from archive extraction |
 
 The stored output is exactly the data delivered in events, so a replay from ID 0 reproduces `stdout` and `stderr`.
+
+## Implementation limits
+
+### Cancellation and removal
+
+In the normal cancellation path, the handler waits for completion. In the current
+container-removal fallback, the handler waits for a bounded period and returns
+the latest execution snapshot; backend removal failures or delayed completion
+can leave that snapshot nonterminal. Clients must inspect `state` and must not
+treat an HTTP response alone as proof that every process has stopped. The SDK
+has its own five-second cancellation deadline, so it can return
+`ErrCancelUnconfirmed` while server cleanup is still in progress.
+
+Container removal is best effort in `terminateLocked`. A sandbox can be recorded
+as `killed` even if Docker removal fails; the error is not returned by the delete
+endpoint. A repeated delete of that killed record does not retry removal. Startup
+cleanup with the same owner label is the recovery path.
 
 ## Server behavior
 
 - Listens on `127.0.0.1:8080` by default (`-addr` flag). Refuses to start on a non-loopback address unless `SANDBOX_API_KEY` is set.
-- Each container is labeled `tiny-sandbox.owner=<listen address>`. On startup the server removes containers carrying its own label, so a restart does not leak sandboxes. State is in memory and is lost on restart.
+- Each container is labeled `tiny-sandbox.owner=<listen address>`. On startup the server attempts to remove containers carrying its own label and logs cleanup failures. State is in memory and is lost on restart. Shutdown does not itself remove containers; startup cleanup matches the listen address, so changing it will not clean containers owned by the previous address.
+
+## Implementation references
+
+- [HTTP handlers](../internal/daemon/handler.go): routing, authentication, activity updates, and SSE framing.
+- [Sandbox store](../internal/daemon/store.go): lifecycle, deadlines, and best-effort removal.
+- [Execution engine](../internal/daemon/engine.go): idempotency, cancellation, and file access.
+- [Reaper](../internal/daemon/reaper.go): timeout and eviction checks.
+- [Server entry point](../cmd/sandboxd/main.go): startup cleanup and HTTP shutdown.

@@ -1,10 +1,10 @@
 # Versioning and release
 
-This repository is an interview demo, not a published hosted service. The Go module, `sandboxctl`, and `sandboxd` share one version number, and GoReleaser publishes nothing.
+The Go module, `sandboxctl`, and `sandboxd` share one version number. CI builds local GoReleaser snapshots and uploads them as workflow artifacts; no tag-triggered publication workflow is configured.
 
 ## Version numbers
 
-Local tags follow semantic versioning: `MAJOR.MINOR.PATCH`.
+Release tags use `vMAJOR.MINOR.PATCH`.
 
 - **patch** fixes behaviour without changing the public contract;
 - **minor** adds a backward-compatible operation, field, or flag;
@@ -22,7 +22,7 @@ The compatibility surface is wider than the Go API:
 - timeout units and their meaning;
 - SSE event types, event ID semantics, and `Last-Event-ID` behaviour.
 
-`api/openapi.yaml` is the single source for HTTP behaviour. The embedded copy in `api/contract.go` and the server's routes are checked against each other by a test, so the spec cannot drift silently.
+[api.md](api.md) is the prose HTTP contract and [api/openapi.yaml](../api/openapi.yaml) is its machine-readable form, embedded by `api/contract.go`. Existing checks compare method/path sets across the prose, specification, and router; they do not prove that every schema or behavioral detail matches. Review those details when changing the contract.
 
 ## Additive changes
 
@@ -40,17 +40,30 @@ golangci-lint run ./...
 goreleaser check
 goreleaser release --snapshot --clean
 E2E_COVERAGE=1 bash scripts/e2e.sh artifacts/e2e
+mkdir -p artifacts/cov-unit
 go test -race -covermode=atomic -coverpkg=./... ./... \
   -args -test.gocoverdir="$PWD/artifacts/cov-unit"
 bash scripts/coverage.sh artifacts/cov-unit artifacts/e2e/coverage 70
 ```
 
-The last three commands are the same ones CI runs; `coverage.sh` merges both
-profiles and fails below the gate. The e2e step needs a Docker daemon and no
-other setup.
+The coverage steps follow CI: `coverage.sh` merges both profiles and enforces
+the 70% gate. Use fresh artifact directories for each run. The E2E suite needs
+a reachable Docker daemon, the Docker CLI and curl; missing container
+images also require registry access. The script starts its own server on port
+18081 by default; set `E2E_PORT` if that port is occupied.
 
-Inspect the archives in `dist/` and verify the checksum file. Do not upload anything or create a GitHub release.
+Inspect the six platform archives in `dist/` and verify `checksums.txt`
+(`sha256sum -c checksums.txt`, or `shasum -a 256 -c checksums.txt` on macOS,
+from that directory). `--snapshot` creates local artifacts without publishing.
+Publishing a release is a separate action from this verification checklist.
 
 ## Rollback
 
-Rolling back means checking out the previous tag and its binaries. It does not roll back sandbox state, and it does not undo commands that already ran. Gradual rollout, canarying, and automated rollback need production telemetry that this demo does not have.
+Rolling back means checking out the previous tag and its binaries. It does not roll back sandbox state, and it does not undo commands that already ran. Server state is not persisted across restarts. Deployment orchestration,
+canarying, and automated rollback are outside this repository's scope.
+
+## Configuration
+
+The [CI workflow](../.github/workflows/ci.yml), [GoReleaser configuration](../.goreleaser.yaml),
+[E2E script](../scripts/e2e.sh), and [coverage merger](../scripts/coverage.sh)
+are the executable sources for the checks described here.
