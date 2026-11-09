@@ -1,6 +1,9 @@
 package daemon
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // sampler is the side channel classification needs after a process exits. A
 // Backend satisfies it; tests substitute a scripted sequence of answers.
@@ -20,6 +23,14 @@ type ExecOutcome struct {
 	// the daemon asking, so the sandbox must become killed with reason
 	// evicted.
 	SandboxLost bool
+
+	// sampled is the liveness sequence an ambiguous 137 observed, and elapsed
+	// is how long the settle window ran. The runner logs both when the verdict
+	// is evicted or when the window ran out, so a misclassification on a
+	// machine we cannot reproduce on leaves a record of what the runtime
+	// actually reported.
+	sampled []Liveness
+	elapsed time.Duration
 }
 
 // classify decides the termination reason. The precedence is fixed by
@@ -56,19 +67,25 @@ func classify(ctx context.Context, s sampler, containerID string, oomBaseline in
 		samples = ambiguousSamples
 	}
 
-	// Sample the whole window and decide on the last observation, rather than
-	// stopping at the first "alive" answer.
+	// Sample until the state settles or the window expires, and decide on the
+	// last observation.
 	//
 	// Both directions of staleness exist. A container record can briefly be
 	// absent before it settles (the false-negative this re-sampling was built
-	// for), and right after an external kill it can briefly still report
-	// "running" before the daemon records the stop (the false-positive that
-	// made CI classify a `docker kill` as a clean exit). Breaking on the first
-	// alive answer only guards the first; waiting for the state to settle
-	// guards both, at the cost of one sampling window on the 137 path.
+	// for), and right after an external kill it can keep reporting "running"
+	// while the daemon catches up (the false-positive that made CI classify a
+	// `docker kill` as a clean exit). Breaking on the first "alive" answer only
+	// guards the first, and a window of a few samples was not long enough on a
+	// loaded CI runner. So the window is a time budget rather than a sample
+	// count, and it ends early only on a state that cannot be stale: two
+	// consecutive "stopped" answers. "Missing" never ends it early, because a
+	// transient miss is exactly the other race, and "running" never does,
+	// because a stale run is the race this window exists for.
 	liveness := LivenessRunning
 	var lastErr error
 	observed := false
+	var sampled []Liveness
+	started := time.Now()
 	for i := 0; i < samples; i++ {
 		if i > 0 && !sleep(ctx, ambiguousInterval) {
 			break
@@ -79,24 +96,37 @@ func classify(ctx context.Context, s sampler, containerID string, oomBaseline in
 			continue
 		}
 		lastErr = nil
+		previous := liveness
 		liveness = answer
 		observed = true
+		if ambiguous {
+			sampled = append(sampled, answer)
+		}
+		if i+1 >= ambiguousMinSamples && answer == LivenessStopped && previous == LivenessStopped {
+			break
+		}
+	}
+	elapsed := time.Since(started)
+	withTrace := func(out ExecOutcome) ExecOutcome {
+		out.sampled = sampled
+		out.elapsed = elapsed
+		return out
 	}
 
 	if !observed && lastErr != nil {
 		// The container could not be observed at all: the runtime failed, not
 		// the process. Treat it as the container being lost so the sandbox
 		// does not claim a clean exit while its container is unaccounted for.
-		return ExecOutcome{Reason: ReasonEvicted, ExitCode: exitCode, SandboxLost: true}
+		return withTrace(ExecOutcome{Reason: ReasonEvicted, ExitCode: exitCode, SandboxLost: true})
 	}
 	if !liveness.Alive() {
 		// The container stopped or vanished without the daemon asking. This is
 		// `docker kill`, `docker rm`, or an external stop.
-		return ExecOutcome{Reason: ReasonEvicted, ExitCode: exitCode, SandboxLost: true}
+		return withTrace(ExecOutcome{Reason: ReasonEvicted, ExitCode: exitCode, SandboxLost: true})
 	}
 
 	// The process exited on its own while its container still lives. This is
 	// the ordinary case, and it includes exit 137 from an in-sandbox
 	// `kill -9`: no intent, no OOM delta, container alive.
-	return ExecOutcome{Reason: ReasonExited, ExitCode: exitCode}
+	return withTrace(ExecOutcome{Reason: ReasonExited, ExitCode: exitCode})
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"io"
+	"log"
 	"sync"
 	"time"
 )
@@ -251,6 +252,13 @@ func (s *Sandboxes) run(sb *sandbox, ex *execution) {
 	ex.mu.Unlock()
 
 	outcome := classify(context.WithoutCancel(context.Background()), s.backend, sb.container, baseline, exitCode, intent, s.sleep)
+	if len(outcome.sampled) > 0 {
+		// One line per ambiguous 137: the observed liveness sequence and how
+		// long it took to settle. This is the evidence a machine we cannot
+		// reproduce on leaves behind for a misclassification.
+		log.Printf("daemon: execution %s exit 137: liveness %v settled after %s -> %s",
+			ex.id, outcome.sampled, outcome.elapsed.Round(time.Millisecond), outcome.Reason)
+	}
 	if waitErr != nil && intent == nil && !outcome.SandboxLost {
 		// The runtime failed to report an exit status. Keep the reason the
 		// classification gave, but the exit code stays unknown.

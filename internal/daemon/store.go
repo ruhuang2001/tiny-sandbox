@@ -55,15 +55,19 @@ func WithCancelDeadline(d time.Duration) Option { return func(s *Sandboxes) { s.
 const OwnerLabelKey = "tiny-sandbox.owner"
 
 // Ambiguity re-sampling: after an exit code of 137 with no recorded intent and
-// no OOM delta, container liveness is sampled across this window and the last
-// observation decides. The window is wide enough for both directions of stale
-// state to settle: a record that is briefly missing, and one that still says
-// "running" for a few milliseconds after an external kill. The 137 path is the
-// only one that pays this cost, and it is small next to the five-second
-// eviction budget in api.md.
+// no OOM delta, container liveness is sampled until it settles or this window
+// runs out, and the last observation decides. A confirmed stop ends the wait
+// early, so the usual external kill costs one or two intervals; the window is
+// the bound for the case CI showed, where the daemon keeps reporting "running"
+// long after the kill. The 137 path is the only one that pays this cost, and it
+// fits the five-second eviction budget in api.md.
 const (
-	ambiguousSamples  = 5
+	ambiguousWindow   = 2 * time.Second
 	ambiguousInterval = 50 * time.Millisecond
+	// ambiguousMinSamples is how many answers are collected before a
+	// confirmed stop may end the wait early.
+	ambiguousMinSamples = 3
+	ambiguousSamples    = int(ambiguousWindow / ambiguousInterval)
 )
 
 // Sandboxes is the daemon's in-memory store of sandboxes and their

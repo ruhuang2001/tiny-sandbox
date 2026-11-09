@@ -216,6 +216,44 @@ func TestAmbiguous137Race(t *testing.T) {
 		}
 	})
 
+	// The exact shape CI produced: the daemon kept answering "running" for
+	// longer than the old fixed five-sample window, so the last sample still
+	// said alive and a `docker kill` was recorded as a clean exit. The window
+	// is now a time budget, so an answer sequence this long still settles.
+	t.Run("a long stale running answer still settles into evicted", func(t *testing.T) {
+		answers := make([]daemon.Liveness, 0, 9)
+		for i := 0; i < 8; i++ {
+			answers = append(answers, daemon.LivenessRunning)
+		}
+		answers = append(answers, daemon.LivenessStopped)
+		h, be := newScripted(t, answers...)
+		be.Programs["exit"] = memExit
+		sb := h.create(daemon.CreateRequest{})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{Command: []string{"exit", "137"}})
+		wantNoError(t, err)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if *done.TerminationReason != daemon.ReasonEvicted {
+			t.Fatalf("reason = %s, want evicted after a stale running window", *done.TerminationReason)
+		}
+	})
+
+	// A stop that has already settled must not pay the whole window: two
+	// consecutive "stopped" answers are the confirmation, after the minimum.
+	t.Run("a confirmed stop ends the window early", func(t *testing.T) {
+		h, be := newScripted(t, daemon.LivenessStopped, daemon.LivenessStopped)
+		be.Programs["exit"] = memExit
+		sb := h.create(daemon.CreateRequest{})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{Command: []string{"exit", "137"}})
+		wantNoError(t, err)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if *done.TerminationReason != daemon.ReasonEvicted {
+			t.Fatalf("reason = %s, want evicted", *done.TerminationReason)
+		}
+		if n := be.livenessCalls(); n != 3 {
+			t.Fatalf("liveness asked %d times; a settled stop must end the window after 3 samples", n)
+		}
+	})
+
 	t.Run("a consistent miss is evicted", func(t *testing.T) {
 		h, be := newScripted(t, daemon.LivenessMissing)
 		be.Programs["exit"] = memExit
