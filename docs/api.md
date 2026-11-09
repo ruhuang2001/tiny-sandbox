@@ -255,8 +255,12 @@ has its own five-second cancellation deadline, so it can return
 
 Container removal is best effort in `terminateLocked`. A sandbox can be recorded
 as `killed` even if Docker removal fails; the error is not returned by the delete
-endpoint. A repeated delete of that killed record does not retry removal. Startup
-cleanup with the same owner label is the recovery path.
+endpoint and a repeated delete of that killed record returns the stored record
+without retrying removal. A removal that fails or exceeds the server's backend
+call timeout is scheduled for the periodic reaper, which retries it until the
+container is gone, so a slow runtime cannot leave a killed sandbox's workload
+running indefinitely. Startup cleanup with the same owner label remains the
+recovery path for a restart with pending retries.
 
 ## Server behavior
 
