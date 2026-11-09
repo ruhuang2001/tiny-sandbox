@@ -2,6 +2,10 @@
 
 Status: normative. Contract for `sandbox-go` (package `sandbox`). The SDK speaks the contract in [api.md](api.md).
 
+The [TypeScript SDK](sdk-typescript.md) uses the same HTTP contract with async
+iteration, AbortSignal and discriminated outcomes. Its additions do not change
+the Go interfaces or outcome/error behavior documented here.
+
 ## Configuration
 
 ```go

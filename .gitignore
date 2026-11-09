@@ -12,3 +12,8 @@
 
 # Release snapshot output.
 /dist/
+
+# TypeScript SDK dependencies and generated package.
+/sandbox-ts/node_modules/
+/sandbox-ts/dist/
+/sandbox-ts/*.tgz

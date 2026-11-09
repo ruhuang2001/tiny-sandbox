@@ -1,6 +1,6 @@
 # Design
 
-tiny-sandbox provides Docker-backed code execution for AI agents through a Go SDK, CLI, and HTTP API. It uses in-memory state and does not provide hardened isolation or multi-tenant access controls.
+tiny-sandbox provides Docker-backed code execution for AI agents through Go and TypeScript SDKs, a CLI, and an HTTP API. It uses in-memory state and does not provide hardened isolation or multi-tenant access controls.
 
 This document is the design source for the implementation. `api.md`, `sdk.md` and `cli.md` are normative contracts; where this document disagrees with them, they win.
 
@@ -27,7 +27,7 @@ This project answers those questions with working code and tests rather than pro
 
 ## Non-goals
 
-Templates, snapshots, volumes, secrets, multi-tenancy, billing, browser automation, non-Go SDKs, durable server state, and hardened isolation (microVMs, gVisor). Each has an extension point and a design sketch in [future.md](future.md).
+Templates, snapshots, volumes, secrets, multi-tenancy, billing, browser automation, further SDK languages, durable server state, and hardened isolation (microVMs, gVisor). Each has an extension point and a design sketch in [future.md](future.md).
 
 ## Architecture
 
@@ -55,6 +55,7 @@ internal/dockerapi/      minimal Engine API client: create, start, exec, inspect
 internal/dockerbackend/  Backend implementation over dockerapi; cgroup reads
 api/                     openapi.yaml plus contract.go with go:embed
 sandbox-go/              SDK: client, sandbox and file methods, exec, stream, retry, errors
+sandbox-ts/              TypeScript SDK: browser-safe fetch, SSE, outcomes and AbortSignal recovery
 examples/agent-tool/     the SDK used as an agent tool function (built and tested in CI)
 ```
 

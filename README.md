@@ -1,6 +1,6 @@
 # tiny-sandbox
 
-Docker-backed code execution for AI agents, with a Go SDK, command-line
+Docker-backed code execution for AI agents, with Go and TypeScript SDKs, a command-line
 client, and HTTP API.
 
 - **Sandbox lifecycle** — create, pause, resume, and remove containers with
@@ -42,7 +42,7 @@ second terminal. See the [CLI reference](docs/cli.md) for commands.
 
 ## Integrate
 
-Use the [Go SDK](docs/sdk.md) to manage sandboxes and execute commands from
+Use the [Go SDK](docs/sdk.md) or [TypeScript SDK](docs/sdk-typescript.md) to manage sandboxes and execute commands from
 your application, or connect directly through the [HTTP API](docs/api.md)
 and [OpenAPI specification](api/openapi.yaml).
 
@@ -68,6 +68,7 @@ limitations](docs/design.md) and [future directions](docs/future.md).
 - [Architecture and execution flows](docs/design.md)
 - [CLI reference](docs/cli.md)
 - [Go SDK reference](docs/sdk.md)
+- [TypeScript SDK reference](docs/sdk-typescript.md)
 - [HTTP API reference](docs/api.md)
 - [Versioning and releases](docs/versioning.md)
 - [Contributing](CONTRIBUTING.md)

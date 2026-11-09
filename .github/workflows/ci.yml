@@ -18,6 +18,41 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: detect TypeScript SDK at the requested revision
+        id: sdk
+        run: |
+          if test -f sandbox-ts/package-lock.json; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'No TypeScript SDK in this historical revision.'
+          fi
+      - uses: actions/setup-go@v5
+        if: steps.sdk.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        if: steps.sdk.outputs.present == 'true'
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: sandbox-ts/package-lock.json
+      - name: TypeScript package and real Docker contract scenarios
+        if: steps.sdk.outputs.present == 'true'
+        run: bash scripts/e2e-typescript.sh artifacts/typescript-e2e
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.sdk.outputs.present == 'true'
+        with:
+          name: typescript-e2e-artifacts
+          path: artifacts/typescript-e2e/
+          retention-days: 7
+
   lint:
     runs-on: ubuntu-latest
     steps:

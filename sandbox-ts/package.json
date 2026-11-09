@@ -1,0 +1,20 @@
+{
+  "name": "@tiny-sandbox/sdk",
+  "version": "0.0.1",
+  "description": "Browser-safe TypeScript SDK for tiny-sandbox",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "scripts": {
+    "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\" && tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.check.json",
+    "test": "bash ../scripts/e2e-typescript.sh",
+    "prepack": "npm run build"
+  },
+  "devDependencies": { "typescript": "5.9.3", "esbuild": "0.25.12" },
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/ruhuang2001/tiny-sandbox.git", "directory": "sandbox-ts" }
+}

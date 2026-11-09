@@ -35,6 +35,10 @@ unknown paths or unsupported methods may use plain text:
 
 Clients may honor a `Retry-After` header (seconds) on 429 and 503.
 
+Go and TypeScript SDKs retry the documented repeatable requests on 429, 500,
+502, 503 and 504 and honor a positive integer Retry-After on ordinary requests.
+Creation is never automatically retried; see the respective SDK contracts.
+
 ## Resources
 
 ### Sandbox

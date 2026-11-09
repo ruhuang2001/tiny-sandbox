@@ -2,7 +2,7 @@ BIN := bin
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: build test vet lint race fmt check-commit install-hooks clean
+.PHONY: build test vet lint race fmt check-commit install-hooks clean typescript typescript-e2e
 
 build:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN)/sandboxd ./cmd/sandboxd
@@ -33,3 +33,9 @@ install-hooks:
 
 clean:
 	rm -rf $(BIN)
+
+typescript:
+	cd sandbox-ts && npm ci && npm run build && npm run check
+
+typescript-e2e:
+	bash scripts/e2e-typescript.sh artifacts/typescript-e2e

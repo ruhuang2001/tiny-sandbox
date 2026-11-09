@@ -5,6 +5,12 @@ CI builds GoReleaser snapshots as workflow artifacts. The separate Release
 workflow validates a release tag through the same CI before building and
 publishing versioned binaries.
 
+The TypeScript SDK in sandbox-ts has an independent npm package version. This
+repository currently builds and validates its tarball without publishing it.
+Its [compatibility contract](sdk-typescript.md#compatibility-and-go-parity)
+includes exported types, codes, outcome discriminants, retry defaults and
+iterator cleanup. Wire additions must remain usable by existing consumers.
+
 ## Version numbers
 
 Release tags use `vMAJOR.MINOR.PATCH`.
@@ -43,6 +49,8 @@ go build ./...
 go vet ./...
 go test -race ./...
 golangci-lint run ./...
+make typescript
+bash scripts/e2e-typescript.sh artifacts/typescript-e2e
 goreleaser check
 goreleaser release --snapshot --clean
 E2E_COVERAGE=1 bash scripts/e2e.sh artifacts/e2e
@@ -81,7 +89,7 @@ dispatch from `main` without moving the tag:
 gh workflow run release.yml --ref main -f tag=v0.0.1
 ```
 
-The workflow resolves the tag to an immutable commit on `main`, runs all four
+The workflow resolves the tag to an immutable commit on `main`, runs all five
 CI jobs against that commit, and only then grants the publishing job
 `contents: write`. It builds six non-snapshot archives, verifies their
 checksums and native version output, uploads to a draft, downloads the
