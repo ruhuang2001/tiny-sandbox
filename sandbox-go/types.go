@@ -53,6 +53,9 @@ type Sandbox struct {
 	State              State       `json:"state"`
 	Image              string      `json:"image"`
 	MemoryMB           int         `json:"memory_mb"`
+	PidsLimit          int         `json:"pids_limit"`
+	NanoCPUs           int64       `json:"nano_cpus"`
+	Network            string      `json:"network"`
 	TimeoutSeconds     int         `json:"timeout_seconds"`
 	TimeoutAction      Action      `json:"timeout_action"`
 	IdleTimeoutSeconds int         `json:"idle_timeout_seconds"`
@@ -77,11 +80,23 @@ type Execution struct {
 	FinishedAt        *Time    `json:"finished_at"`
 }
 
+// Network modes a sandbox can be created with.
+const (
+	// NetworkBridge gives the sandbox outbound network access through Docker's
+	// bridge. This is the default: package installs and HTTP calls work.
+	NetworkBridge = "bridge"
+	// NetworkNone removes networking entirely.
+	NetworkNone = "none"
+)
+
 // CreateSandboxRequest is the body of POST /v1/sandboxes. Every field is
 // optional; a nil pointer takes the server default.
 type CreateSandboxRequest struct {
 	Image              *string `json:"image,omitempty"`
 	MemoryMB           *int    `json:"memory_mb,omitempty"`
+	PidsLimit          *int    `json:"pids_limit,omitempty"`
+	NanoCPUs           *int64  `json:"nano_cpus,omitempty"`
+	Network            *string `json:"network,omitempty"`
 	TimeoutSeconds     *int    `json:"timeout_seconds,omitempty"`
 	TimeoutAction      *Action `json:"timeout_action,omitempty"`
 	IdleTimeoutSeconds *int    `json:"idle_timeout_seconds,omitempty"`

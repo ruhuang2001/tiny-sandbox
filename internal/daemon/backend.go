@@ -73,6 +73,15 @@ func (l Liveness) String() string {
 type ContainerSpec struct {
 	Image    string
 	MemoryMB int
+	// PidsLimit bounds tasks in the container. A backend must apply it: the
+	// value is the only thing standing between a fork bomb and the host's PID
+	// table.
+	PidsLimit int
+	// NanoCPUs bounds CPU time in units of 1e-9 CPUs. Zero means no limit.
+	NanoCPUs int64
+	// Network is the container's network mode. Empty means the backend's
+	// default, which is a bridge with outbound access.
+	Network NetworkMode
 	// Name is a stable container name derived from the sandbox ID. A backend
 	// may use it as a hint but must key every operation on the returned ID.
 	Name string

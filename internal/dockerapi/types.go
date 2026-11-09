@@ -20,9 +20,11 @@ type ContainerConfig struct {
 type HostConfig struct {
 	Memory      int64             `json:"Memory,omitempty"`
 	MemorySwap  int64             `json:"MemorySwap,omitempty"`
+	NanoCpus    int64             `json:"NanoCpus,omitempty"`
 	PidsLimit   *int64            `json:"PidsLimit,omitempty"`
 	CapDrop     []string          `json:"CapDrop,omitempty"`
 	SecurityOpt []string          `json:"SecurityOpt,omitempty"`
+	NetworkMode string            `json:"NetworkMode,omitempty"`
 	Tmpfs       map[string]string `json:"Tmpfs,omitempty"`
 	// Init runs Docker's init process as PID 1 instead of the container's
 	// command. The sandbox needs it because PID 1 is what reaps orphaned

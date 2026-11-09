@@ -240,6 +240,39 @@ check "hardening exit" "the probe command succeeds" "$?" "0"
 contains "hardening pids" "pids limit reaches the cgroup" "$OUT/hardening.out" "1024"
 contains "hardening nonewprivs" "no-new-privileges is set" "$OUT/hardening.out" "NoNewPrivs:	1"
 
+# A caller-set pids limit must win over the default, in the cgroup and not
+# only in the response body. The request is the only place the value comes
+# from, so a mismatch here means the spec never reached Docker.
+"$BIN/sandboxctl" run --image python:3.12-alpine --pids-limit 128 -- \
+  cat /sys/fs/cgroup/pids.max >"$OUT/pids-request.out" 2>"$OUT/pids-request.err"
+check "pids-request exit" "the probe command succeeds" "$?" "0"
+check "pids-request applied" "a requested pids limit reaches the cgroup" \
+  "$(cat "$OUT/pids-request.out")" "128"
+
+# Network access is the default, so it is the absence that has to be proven.
+# The evidence is the interface list, not a reachability probe: a connect to
+# the internet would make this suite depend on CI egress, and what the mode
+# controls is whether a non-loopback interface exists at all.
+"$BIN/sandboxctl" run --image python:3.12-alpine --network none -- \
+  sh -c 'awk -F: "NR>2 {gsub(/ /,\"\",\$1); print \$1}" /proc/net/dev' \
+  >"$OUT/network-none.out" 2>"$OUT/network-none.err"
+check "network-none exit" "the network probe succeeds" "$?" "0"
+check "network-none blocked" "--network none leaves only loopback" \
+  "$(tr '\n' ' ' <"$OUT/network-none.out" | tr -s ' ' | sed 's/ $//')" "lo"
+
+# The default must be the opposite, or the isolation check above proves nothing
+# about the mode it was asked for.
+"$BIN/sandboxctl" run --image python:3.12-alpine -- \
+  sh -c 'awk -F: "NR>2 {gsub(/ /,\"\",\$1); print \$1}" /proc/net/dev' \
+  >"$OUT/network-bridge.out" 2>"$OUT/network-bridge.err"
+check "network-bridge exit" "the network probe succeeds" "$?" "0"
+if grep -qv '^lo$' "$OUT/network-bridge.out"; then
+  pass "network-bridge open"
+else
+  fail "network-bridge open" "the default network has no non-loopback interface" \
+    "$(tr '\n' ' ' <"$OUT/network-bridge.out")" "eth0 or similar"
+fi
+
 # The fork bomb is what the pids limit exists for. Memory alone does not stop
 # it: a sleeping child costs a task slot, not a page.
 #

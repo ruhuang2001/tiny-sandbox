@@ -415,7 +415,7 @@ func TestRunForwardsExplicitZeroTimeouts(t *testing.T) {
 // the "flag not given" sentinel: an explicit -1 must not pass silently.
 func TestRunRejectsNegativeTimeouts(t *testing.T) {
 	for _, value := range []string{"-1", "-5"} {
-		for _, flagName := range []string{"--timeout", "--idle-timeout", "--memory"} {
+		for _, flagName := range []string{"--timeout", "--idle-timeout", "--memory", "--nano-cpus"} {
 			h := newCLIHarness(t)
 			got := h.invoke("run", flagName, value, "--", "true")
 			if got.code != 2 {
@@ -425,6 +425,34 @@ func TestRunRejectsNegativeTimeouts(t *testing.T) {
 				t.Errorf("%s %s stderr = %q", flagName, value, got.stderr)
 			}
 		}
+	}
+}
+
+// TestRunRejectsBadResourceFlags covers the two flags whose invalid values are
+// not "negative": a zero pids limit has no sane meaning, and a network mode
+// outside the two the contract offers must be a usage error rather than a
+// silent fallback to the default.
+func TestRunRejectsBadResourceFlags(t *testing.T) {
+	cases := []struct {
+		name   string
+		args   []string
+		stderr string
+	}{
+		{"zero pids", []string{"--pids-limit", "0"}, "must be positive"},
+		{"unknown network", []string{"--network", "host"}, "bridge"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newCLIHarness(t)
+			args := append(append([]string{"run"}, tc.args...), "--", "true")
+			got := h.invoke(args...)
+			if got.code != 2 {
+				t.Fatalf("run = %+v, want usage error", got)
+			}
+			if !strings.Contains(got.stderr, tc.stderr) {
+				t.Errorf("stderr = %q, want %q in it", got.stderr, tc.stderr)
+			}
+		})
 	}
 }
 

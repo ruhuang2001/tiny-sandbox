@@ -228,10 +228,13 @@ func (s *Sandboxes) Create(ctx context.Context, req CreateRequest) (Sandbox, err
 	s.mu.Unlock()
 
 	spec := ContainerSpec{
-		Image:    opts.image,
-		MemoryMB: opts.memoryMB,
-		Name:     "tiny-sandbox-" + id,
-		Labels:   map[string]string{OwnerLabelKey: s.owner},
+		Image:     opts.image,
+		MemoryMB:  opts.memoryMB,
+		PidsLimit: opts.pidsLimit,
+		NanoCPUs:  opts.nanoCPUs,
+		Network:   opts.network,
+		Name:      "tiny-sandbox-" + id,
+		Labels:    map[string]string{OwnerLabelKey: s.owner},
 	}
 	containerID, err := s.backend.Create(ctx, spec)
 	if err != nil {
@@ -542,6 +545,9 @@ func (sb *sandbox) snapshot() Sandbox {
 		State:              sb.state,
 		Image:              sb.opts.image,
 		MemoryMB:           sb.opts.memoryMB,
+		PidsLimit:          sb.opts.pidsLimit,
+		NanoCPUs:           sb.opts.nanoCPUs,
+		Network:            sb.opts.network,
 		TimeoutSeconds:     sb.opts.timeoutSeconds,
 		TimeoutAction:      sb.opts.timeoutAction,
 		IdleTimeoutSeconds: sb.opts.idleTimeoutSeconds,

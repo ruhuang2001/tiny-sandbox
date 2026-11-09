@@ -92,10 +92,22 @@ mode that reaches past the sandbox:
 - **`no-new-privileges`.** A setuid binary in the image cannot raise privileges
   inside the container.
 
-CPU limits are not set yet. A busy loop therefore competes with the daemon and
-with every other sandbox, and the fix is a create-time option (PR for resource
-knobs) rather than a fixed default, because the right value depends on the
-workload.
+CPU limits default to none, as Docker's own default: the right value depends on
+the workload, so it is a create-time option (`nano_cpus`) rather than a fixed
+default. Without one a busy loop competes with the daemon and with every other
+sandbox.
+
+`pids_limit` is a create-time option too, defaulting to 1024. It is not simply
+"higher is safer": a sandbox sized for a JVM or a Go build needs thousands of
+tasks, and a caller that knows its workload can raise it. The floor is 64
+because below it the sandbox's own scaffolding cannot start an exec helper.
+
+Network access defaults to `bridge`, which keeps every existing caller working:
+package installs and HTTP calls need outbound access, and a sandbox with no
+network cannot do most of what an agent asks of it. `none` is available for
+callers that want the isolation and can pay for it. The mode is chosen at
+creation because Docker cannot change a container's network afterwards. Host
+networking is deliberately not offered.
 
 A process tree that fills the pids limit is also the one case where cancel
 degrades: the in-container helper that reads the PID file and signals the group

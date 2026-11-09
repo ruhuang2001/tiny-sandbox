@@ -13,6 +13,20 @@ const (
 	MinMemoryMB           = 16
 	DefaultTimeoutSeconds = 300
 
+	// DefaultPidsLimit bounds tasks per sandbox when the request does not set
+	// one. The pids cgroup counts tasks, not processes, so this leaves room for
+	// a JVM or a Go build while still stopping a fork bomb at the container
+	// boundary instead of at the host's PID table.
+	DefaultPidsLimit = 1024
+	// MinPidsLimit is the smallest accepted pids limit. Below it the sandbox
+	// cannot reliably run its own scaffolding: an exec plus the shell wrapper
+	// and the in-container signal helper need several tasks between them.
+	MinPidsLimit = 64
+	// DefaultNetwork is the sandbox network mode when the request does not set
+	// one. bridge keeps the behavior every existing caller has; none disables
+	// outbound and inbound networking entirely.
+	DefaultNetwork = NetworkBridge
+
 	// MaxOutputBytes is the retained stdout+stderr budget per execution.
 	MaxOutputBytes = 1 << 20
 	// MaxOutputEvents bounds the number of stdout and stderr events.
@@ -60,6 +74,21 @@ const (
 // Action is what a timeout does when it fires. Only kill and pause exist.
 type Action string
 
+// NetworkMode is the sandbox container's network mode. Only the two modes that
+// keep the sandbox isolated from the host exist: host networking would expose
+// every host socket to code the caller does not control.
+type NetworkMode string
+
+// Network modes.
+const (
+	// NetworkBridge gives the container its own network namespace with
+	// outbound access, Docker's default. Package installs work.
+	NetworkBridge NetworkMode = "bridge"
+	// NetworkNone gives the container an empty namespace: no outbound
+	// connection and no inbound traffic.
+	NetworkNone NetworkMode = "none"
+)
+
 // Actions a timeout can take.
 const (
 	ActionKill  Action = "kill"
@@ -95,6 +124,9 @@ type Sandbox struct {
 	State              State       `json:"state"`
 	Image              string      `json:"image"`
 	MemoryMB           int         `json:"memory_mb"`
+	PidsLimit          int         `json:"pids_limit"`
+	NanoCPUs           int64       `json:"nano_cpus"`
+	Network            NetworkMode `json:"network"`
 	TimeoutSeconds     int         `json:"timeout_seconds"`
 	TimeoutAction      Action      `json:"timeout_action"`
 	IdleTimeoutSeconds int         `json:"idle_timeout_seconds"`
@@ -151,12 +183,15 @@ func (e Execution) Summary() ExecutionSummary {
 // CreateRequest carries the optional fields of POST /v1/sandboxes. A nil
 // pointer means "use the default"; a pointer to zero is an explicit zero.
 type CreateRequest struct {
-	Image              *string `json:"image,omitempty"`
-	MemoryMB           *int    `json:"memory_mb,omitempty"`
-	TimeoutSeconds     *int    `json:"timeout_seconds,omitempty"`
-	TimeoutAction      *Action `json:"timeout_action,omitempty"`
-	IdleTimeoutSeconds *int    `json:"idle_timeout_seconds,omitempty"`
-	IdleTimeoutAction  *Action `json:"idle_timeout_action,omitempty"`
+	Image              *string      `json:"image,omitempty"`
+	MemoryMB           *int         `json:"memory_mb,omitempty"`
+	PidsLimit          *int         `json:"pids_limit,omitempty"`
+	NanoCPUs           *int64       `json:"nano_cpus,omitempty"`
+	Network            *NetworkMode `json:"network,omitempty"`
+	TimeoutSeconds     *int         `json:"timeout_seconds,omitempty"`
+	TimeoutAction      *Action      `json:"timeout_action,omitempty"`
+	IdleTimeoutSeconds *int         `json:"idle_timeout_seconds,omitempty"`
+	IdleTimeoutAction  *Action      `json:"idle_timeout_action,omitempty"`
 }
 
 // ExecuteRequest is the body of POST /v1/sandboxes/{id}/executions.
@@ -175,6 +210,9 @@ type ExecuteRequest struct {
 type sandboxOptions struct {
 	image              string
 	memoryMB           int
+	pidsLimit          int
+	nanoCPUs           int64
+	network            NetworkMode
 	timeoutSeconds     int
 	timeoutAction      Action
 	idleTimeoutSeconds int
@@ -186,6 +224,9 @@ func (r CreateRequest) resolve() (sandboxOptions, error) {
 	opts := sandboxOptions{
 		image:              DefaultImage,
 		memoryMB:           DefaultMemoryMB,
+		pidsLimit:          DefaultPidsLimit,
+		nanoCPUs:           0, // no CPU limit, as Docker's own default
+		network:            DefaultNetwork,
 		timeoutSeconds:     DefaultTimeoutSeconds,
 		timeoutAction:      ActionKill,
 		idleTimeoutSeconds: 0,
@@ -196,6 +237,26 @@ func (r CreateRequest) resolve() (sandboxOptions, error) {
 			return sandboxOptions{}, errorf(CodeInvalidRequest, "image must not be empty")
 		}
 		opts.image = *r.Image
+	}
+	if r.PidsLimit != nil {
+		if *r.PidsLimit < MinPidsLimit {
+			return sandboxOptions{}, errorf(CodeInvalidRequest, "pids_limit must be at least %d", MinPidsLimit)
+		}
+		opts.pidsLimit = *r.PidsLimit
+	}
+	if r.NanoCPUs != nil {
+		if *r.NanoCPUs < 0 {
+			return sandboxOptions{}, errorf(CodeInvalidRequest, "nano_cpus must not be negative; use 0 for no limit")
+		}
+		opts.nanoCPUs = *r.NanoCPUs
+	}
+	if r.Network != nil {
+		switch *r.Network {
+		case NetworkBridge, NetworkNone:
+			opts.network = *r.Network
+		default:
+			return sandboxOptions{}, errorf(CodeInvalidRequest, "network must be %q or %q", NetworkBridge, NetworkNone)
+		}
 	}
 	if r.MemoryMB != nil {
 		if *r.MemoryMB < MinMemoryMB {
