@@ -324,7 +324,7 @@ Rules:
 
 ## CI/CD
 
-One workflow, four jobs:
+The reusable CI workflow has four jobs:
 
 | Job | Contents |
 |---|---|
@@ -333,7 +333,12 @@ One workflow, four jobs:
 | `build` | `go build ./...`, both commands, the example, `goreleaser check`, six snapshot archives and checksum verification |
 | `e2e` | Docker-backed suite with coverage instrumentation; enforces the merged coverage gate; uploads `artifacts/`; asserts no containers remain |
 
-CI builds GoReleaser snapshots: six platform archives plus a checksum file. There is no automatic tag-release workflow. Versioning follows semantic versioning at the repository level; CLI flags, environment variables, JSON fields, error types, timeout units, and SSE event semantics are all part of the compatibility surface. [versioning.md](versioning.md) holds the details, and [competitors.md](competitors.md)
+CI builds GoReleaser snapshots: six platform archives plus a checksum file.
+The Release workflow calls those same four jobs against the exact tagged
+commit, then builds and publishes non-snapshot artifacts. It supports tag
+pushes and manual dispatch for existing tags, verifies downloaded draft
+attachments before publication, and refuses to overwrite published releases.
+Versioning follows semantic versioning at the repository level; CLI flags, environment variables, JSON fields, error types, timeout units, and SSE event semantics are all part of the compatibility surface. [versioning.md](versioning.md) holds the details, and [competitors.md](competitors.md)
 records which parts of the E2B and Daytona client surfaces this design keeps
 compatible and which it deliberately changes.
 

@@ -1,6 +1,9 @@
 # Versioning and release
 
-The Go module, `sandboxctl`, and `sandboxd` share one version number. CI builds local GoReleaser snapshots and uploads them as workflow artifacts; no tag-triggered publication workflow is configured.
+The Go module, `sandboxctl`, and `sandboxd` share one version number. Ordinary
+CI builds GoReleaser snapshots as workflow artifacts. The separate Release
+workflow validates a release tag through the same CI before building and
+publishing versioned binaries.
 
 ## Version numbers
 
@@ -60,29 +63,48 @@ Inspect the six platform archives in `dist/` and verify `checksums.txt`
 from that directory). `--snapshot` creates local artifacts without publishing.
 Publishing a release is a separate action from this verification checklist.
 
-## Publish manually
+## Publish through GitHub Actions
 
-After the checklist passes, use a clean checkout of the intended release
-commit. The example below publishes `v0.0.1`; change the version consistently
-for later releases.
+After preparing the intended release commit on `main`, update OpenAPI's
+`info.version`, create a stable `vMAJOR.MINOR.PATCH` tag, and push it. Tags
+containing the Release workflow trigger publication automatically:
 
 ```sh
-git tag -a v0.0.1 -m 'v0.0.1'
-goreleaser release --clean --skip=publish
-(cd dist && shasum -a 256 -c checksums.txt)
-git push origin v0.0.1
-gh release create v0.0.1 --verify-tag --title v0.0.1 \
-  --notes-file /path/to/release-notes.md \
-  dist/tiny-sandbox_0.0.1_*.tar.gz \
-  dist/tiny-sandbox_0.0.1_*.zip dist/checksums.txt
+git tag -a v0.0.2 -m 'v0.0.2'
+git push origin v0.0.2
 ```
 
-The build command creates versioned release artifacts, not snapshots.
-Publishing requires GitHub authentication and write access; pushing a tag alone
-does not publish binaries. Write the release notes before running the final
-command. After publication, download the six archives and `checksums.txt` from
-the Release, verify all hashes, and check the native binaries' version output
-(`sandboxctl version` and `sandboxd -version`).
+For an existing tag, including one created before the workflow was added,
+dispatch from `main` without moving the tag:
+
+```sh
+gh workflow run release.yml --ref main -f tag=v0.0.1
+```
+
+The workflow resolves the tag to an immutable commit on `main`, runs all four
+CI jobs against that commit, and only then grants the publishing job
+`contents: write`. It builds six non-snapshot archives, verifies their
+checksums and native version output, uploads to a draft, downloads the
+attachments again, and checks them against the CI build before publishing.
+The release notes include a link to the responsible Actions run.
+
+Existing release notes are retained. A published Release is never overwritten.
+If a failed or earlier manual attempt left same-name assets in a draft,
+inspect and back them up before explicitly allowing replacement:
+
+```sh
+gh workflow run release.yml --ref main \
+  -f tag=v0.0.1 -f replace_draft_assets=true
+```
+
+That option deletes and replaces same-name draft attachments; it does not
+delete the draft or move the tag. It defaults to false. The CI-built archives
+and checksums are also retained as an Actions artifact for seven days.
+
+After publication, download the six archives and `checksums.txt` from the
+Release, verify all hashes, and check the native binaries' version output
+(`sandboxctl version` and `sandboxd -version`). Do not upload local binaries
+as a substitute for this workflow.
 
 ## Rollback
 
@@ -91,6 +113,7 @@ canarying, and automated rollback are outside this repository's scope.
 
 ## Configuration
 
-The [CI workflow](../.github/workflows/ci.yml), [GoReleaser configuration](../.goreleaser.yaml),
+The [CI workflow](../.github/workflows/ci.yml), [Release workflow](../.github/workflows/release.yml),
+[GoReleaser configuration](../.goreleaser.yaml),
 [E2E script](../scripts/e2e.sh), and [coverage merger](../scripts/coverage.sh)
 are the executable sources for the checks described here.

@@ -1,0 +1,156 @@
+name: release
+run-name: Release ${{ inputs.tag || github.ref_name }}
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+      replace_draft_assets:
+        description: Replace same-name assets in an existing draft
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  resolve:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: resolve immutable release source
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          sha=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$sha" origin/main
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+
+  publish:
+    needs: [resolve, validate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: confirm tag and OpenAPI release version
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          spec = pathlib.Path("api/openapi.yaml").read_text()
+          version = re.search(r"^  version: (\S+)$", spec, re.MULTILINE).group(1)
+          assert version == os.environ["RELEASE_TAG"][1:], version
+          PY
+      - name: build versioned release artifacts
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: v2.20.0
+          args: release --clean --skip=publish
+      - name: verify release artifacts
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          dist = pathlib.Path("dist")
+          version = os.environ["RELEASE_TAG"][1:]
+          metadata = json.loads((dist / "metadata.json").read_text())
+          assert metadata["version"] == version, metadata
+          assert metadata["commit"] == os.environ["RELEASE_SHA"], metadata
+          expected = {
+              f"tiny-sandbox_{version}_{system}_{arch}.{extension}"
+              for system, extension in [("linux", "tar.gz"), ("darwin", "tar.gz"), ("windows", "zip")]
+              for arch in ["amd64", "arm64"]
+          }
+          actual = {p.name for p in dist.glob("*.tar.gz")} | {p.name for p in dist.glob("*.zip")}
+          assert actual == expected, (actual, expected)
+          PY
+          (cd dist && sha256sum -c checksums.txt)
+          mkdir -p "$RUNNER_TEMP/release-smoke"
+          tar -xzf "dist/tiny-sandbox_${RELEASE_TAG#v}_linux_amd64.tar.gz" \
+            -C "$RUNNER_TEMP/release-smoke" sandboxctl sandboxd
+          test "$("$RUNNER_TEMP/release-smoke/sandboxctl" version)" = "${RELEASE_TAG#v}"
+          test "$("$RUNNER_TEMP/release-smoke/sandboxd" -version)" = "${RELEASE_TAG#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ needs.resolve.outputs.tag }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          retention-days: 7
+      - name: upload to draft and verify before publishing
+        env:
+          REPLACE_DRAFT_ASSETS: ${{ inputs.replace_draft_assets || false }}
+        run: |
+          remote_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)
+          test "$remote_sha" = "$RELEASE_SHA"
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
+            if [ "$draft" != true ]; then
+              echo "::error::Refusing to modify an already published release"
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "$RELEASE_TAG" --generate-notes
+          fi
+          flags=()
+          if [ "$REPLACE_DRAFT_ASSETS" = true ]; then
+            flags+=(--clobber)
+          fi
+          gh release upload "$RELEASE_TAG" "${flags[@]}" \
+            dist/*.tar.gz dist/*.zip dist/checksums.txt
+          download="$RUNNER_TEMP/release-download"
+          mkdir -p "$download"
+          gh release download "$RELEASE_TAG" --dir "$download"
+          test "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')" -eq 7
+          cmp dist/checksums.txt "$download/checksums.txt"
+          (cd "$download" && sha256sum -c checksums.txt)
+          gh release view "$RELEASE_TAG" --json body --jq .body > "$RUNNER_TEMP/release-notes.md"
+          printf '\n\nPublished by [GitHub Actions](%s/%s/actions/runs/%s) from `%s`.\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$RELEASE_SHA" \
+            >> "$RUNNER_TEMP/release-notes.md"
+          gh release edit "$RELEASE_TAG" --verify-tag --draft=false --latest \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
