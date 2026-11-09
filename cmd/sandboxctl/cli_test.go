@@ -346,13 +346,17 @@ type fakeOOM struct{}
 
 func (*fakeOOM) Error() string { return "oom" }
 
-func (e *fakeOOM) Is(target error) bool { return target.Error() == "sandbox: killed by the kernel OOM killer" }
+func (e *fakeOOM) Is(target error) bool {
+	return target.Error() == "sandbox: killed by the kernel OOM killer"
+}
 
 type fakeTimeout struct{}
 
 func (*fakeTimeout) Error() string { return "timeout" }
 
-func (e *fakeTimeout) Is(target error) bool { return target.Error() == "sandbox: sandbox lifetime expired" }
+func (e *fakeTimeout) Is(target error) bool {
+	return target.Error() == "sandbox: sandbox lifetime expired"
+}
 
 type fakeEvicted struct{}
 
@@ -366,7 +370,9 @@ type fakeBusy struct{}
 
 func (*fakeBusy) Error() string { return "busy" }
 
-func (e *fakeBusy) Is(target error) bool { return target.Error() == "sandbox: another execution is running" }
+func (e *fakeBusy) Is(target error) bool {
+	return target.Error() == "sandbox: another execution is running"
+}
 
 type fakeAuth struct{}
 
