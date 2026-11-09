@@ -13,6 +13,10 @@ import (
 )
 
 // runFlags are the creation and execution options of `sandboxctl run`.
+//
+// Numeric creation flags default to -1, which means "not given": for
+// timeout and idle-timeout an explicit 0 is meaningful (it disables the
+// timeout), so zero cannot also stand for "unset".
 type runFlags struct {
 	sandboxID     string
 	image         string
@@ -24,24 +28,40 @@ type runFlags struct {
 	remove        bool
 }
 
+// unsetFlag is the value of a numeric flag the caller did not give.
+const unsetFlag = -1
+
 // runCommand implements `sandboxctl run [flags] -- CMD [ARG...]`.
 func (in *invocation) runCommand(args []string) int {
 	flagsPart, command := splitCommand(args)
-	rf := &runFlags{}
+	rf := &runFlags{memoryMB: unsetFlag, timeout: unsetFlag, idleTimeout: unsetFlag}
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(in.stderr)
 	fs.StringVar(&rf.sandboxID, "sandbox", "", "use an existing sandbox")
 	fs.StringVar(&rf.image, "image", "", "image for a new sandbox")
-	fs.IntVar(&rf.memoryMB, "memory", 0, "memory limit in MB")
-	fs.IntVar(&rf.timeout, "timeout", 0, "lifetime timeout in seconds")
+	fs.IntVar(&rf.memoryMB, "memory", unsetFlag, "memory limit in MB")
+	fs.IntVar(&rf.timeout, "timeout", unsetFlag, "lifetime timeout in seconds (0 disables)")
 	fs.StringVar(&rf.timeoutAction, "timeout-action", "", "kill or pause")
-	fs.IntVar(&rf.idleTimeout, "idle-timeout", 0, "idle timeout in seconds")
+	fs.IntVar(&rf.idleTimeout, "idle-timeout", unsetFlag, "idle timeout in seconds (0 disables)")
 	fs.StringVar(&rf.idleAction, "idle-action", "", "kill or pause")
 	fs.BoolVar(&rf.remove, "rm", false, "kill the sandbox after the command")
 	if err := fs.Parse(flagsPart); err != nil {
 		return 2
 	}
 	command = append(command, fs.Args()...)
+
+	if rf.memoryMB != unsetFlag && rf.memoryMB < 0 {
+		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: --memory must not be negative")
+		return 2
+	}
+	if rf.timeout < 0 && rf.timeout != unsetFlag {
+		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: --timeout must not be negative; use 0 to disable")
+		return 2
+	}
+	if rf.idleTimeout < 0 && rf.idleTimeout != unsetFlag {
+		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: --idle-timeout must not be negative; use 0 to disable")
+		return 2
+	}
 
 	if len(command) == 0 {
 		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: run needs a command, e.g. sandboxctl run -- ls -l")
@@ -167,23 +187,25 @@ func outcomeExit(ex *sandbox.Execution) error {
 	}
 }
 
-// createRequest turns the flags into the SDK's request.
+// createRequest turns the flags into the SDK's request. A flag counts as given
+// when it differs from unsetFlag, so --timeout 0 reaches the server and
+// disables the lifetime timeout instead of silently meaning "use the default".
 func (rf *runFlags) createRequest() sandbox.CreateSandboxRequest {
 	req := sandbox.CreateSandboxRequest{}
 	if rf.image != "" {
 		req.Image = &rf.image
 	}
-	if rf.memoryMB > 0 {
+	if rf.memoryMB != unsetFlag {
 		req.MemoryMB = &rf.memoryMB
 	}
-	if rf.timeout > 0 {
+	if rf.timeout != unsetFlag {
 		req.TimeoutSeconds = &rf.timeout
 	}
 	if rf.timeoutAction != "" {
 		action := sandbox.Action(rf.timeoutAction)
 		req.TimeoutAction = &action
 	}
-	if rf.idleTimeout > 0 {
+	if rf.idleTimeout != unsetFlag {
 		req.IdleTimeoutSeconds = &rf.idleTimeout
 	}
 	if rf.idleAction != "" {
@@ -200,16 +222,16 @@ func checkNoCreationFlags(rf *runFlags) error {
 	if rf.image != "" {
 		used = append(used, "--image")
 	}
-	if rf.memoryMB > 0 {
+	if rf.memoryMB != unsetFlag {
 		used = append(used, "--memory")
 	}
-	if rf.timeout > 0 {
+	if rf.timeout != unsetFlag {
 		used = append(used, "--timeout")
 	}
 	if rf.timeoutAction != "" {
 		used = append(used, "--timeout-action")
 	}
-	if rf.idleTimeout > 0 {
+	if rf.idleTimeout != unsetFlag {
 		used = append(used, "--idle-timeout")
 	}
 	if rf.idleAction != "" {
