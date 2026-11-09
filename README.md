@@ -64,15 +64,22 @@ loses output.
 
 ## Examples
 
-- [`examples/agent-tool/`](examples/agent-tool/) — the SDK wrapped as an agent
-  tool: a JSON schema the model sees, and a result object that reports `oom`,
-  `timeout`, `canceled`, `evicted`, and `nonzero_exit` as distinct outcomes with
-  output attached. Built and tested in CI; run it with no server at all:
+- [`examples/agent-tool/`](examples/agent-tool/README.md) — an example adapter
+  that lets an agent application expose the Go SDK as a `run_python` tool.
+  The model produces JSON arguments; your application calls the adapter and
+  sends its structured result back to the model. This is not a complete agent
+  or an MCP server. See the [usage and integration guide](examples/agent-tool/README.md)
+  for the model/application/SDK boundary, real Docker execution, and error handling.
+  Preview the tool definition and a simulated result without a server:
 
   ```sh
-  go run ./examples/agent-tool/cmd/demo -- -definition
-  go run ./examples/agent-tool/cmd/demo -- -code 'print(2 ** 10)'
+  go run ./examples/agent-tool/cmd/demo -definition
+  env -u SANDBOX_DOMAIN go run ./examples/agent-tool/cmd/demo -code 'print(2 ** 10)'
   ```
+
+  Without `SANDBOX_DOMAIN`, the demo uses a stub that only recognizes the exact
+  code above; it does not execute Python. Set `SANDBOX_DOMAIN` to a running
+  `sandboxd` to execute arbitrary Python in Docker.
 
 ## SDK
 

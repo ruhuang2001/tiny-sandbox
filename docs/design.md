@@ -111,7 +111,7 @@ examples/agent-tool/     the SDK used as an agent tool function (built and teste
 
 Classification order is fixed: recorded intent (`canceled`, `timeout`) first, then a positive delta in the cgroup `oom_kill` counter, then container liveness, then the exit code. Exit 137 alone never means OOM: an explicit `kill -9`, an eviction, and a runtime stop all produce 137.
 
-An earlier build misclassified an externally stopped container as `exited` because `docker inspect` intermittently reported a lowercase `no such object` before the container record settled. The current design checks the exact container list and re-samples an ambiguous 137 briefly before deciding. That race is covered by a unit test, not left to the end-to-end suite.
+An earlier build misclassified an externally stopped container as `exited` because `docker inspect` intermittently reported a lowercase `no such object` before the container record settled. The current design checks the exact container list instead of `inspect`, and for an ambiguous 137 it samples liveness across a short window and decides on the last observation: the state can be stale in either direction — briefly missing, or briefly still `running` right after an external kill — so neither a single "not running" nor a single "running" answer decides. Both races are covered by unit tests, one of them found by the end-to-end suite on a slow runner.
 
 ### Retries
 
