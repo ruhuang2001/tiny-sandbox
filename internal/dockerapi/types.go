@@ -24,6 +24,11 @@ type HostConfig struct {
 	CapDrop     []string          `json:"CapDrop,omitempty"`
 	SecurityOpt []string          `json:"SecurityOpt,omitempty"`
 	Tmpfs       map[string]string `json:"Tmpfs,omitempty"`
+	// Init runs Docker's init process as PID 1 instead of the container's
+	// command. The sandbox needs it because PID 1 is what reaps orphaned
+	// grandchildren, and a pids limit makes unreaped zombies permanent lost
+	// task slots.
+	Init *bool `json:"Init,omitempty"`
 }
 
 // Container is one entry of GET /containers/json.

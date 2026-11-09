@@ -56,8 +56,19 @@ func TestCreateSendsLimitsAndLabels(t *testing.T) {
 	if !slices.Contains(cfg.HostConfig.CapDrop, "NET_RAW") {
 		t.Errorf("cap_drop = %v, want NET_RAW among them", cfg.HostConfig.CapDrop)
 	}
+	// Device-node creation is the other capability a sandbox must not have:
+	// MKNOD would let a command reach host devices.
+	if !slices.Contains(cfg.HostConfig.CapDrop, "MKNOD") {
+		t.Errorf("cap_drop = %v, want MKNOD among them", cfg.HostConfig.CapDrop)
+	}
 	if !slices.Contains(cfg.HostConfig.SecurityOpt, "no-new-privileges") {
 		t.Errorf("security_opt = %v, want no-new-privileges", cfg.HostConfig.SecurityOpt)
+	}
+	// PID 1 has to reap orphans. Without an init process, a child whose
+	// parent exits stays a zombie and keeps its pids slot forever, so a
+	// sandbox that forked once eventually cannot fork again.
+	if cfg.HostConfig.Init == nil || !*cfg.HostConfig.Init {
+		t.Errorf("init = %v, want an init process as PID 1 so orphans are reaped", cfg.HostConfig.Init)
 	}
 	if cfg.Labels[daemon.OwnerLabelKey] != "127.0.0.1:8080" {
 		t.Errorf("labels = %v", cfg.Labels)

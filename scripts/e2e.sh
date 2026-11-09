@@ -213,8 +213,15 @@ note "hardening"
 # These limits are not in the HTTP contract: the backend fixes them. The check
 # therefore reads the container's own cgroup, which is the only evidence that
 # the limit reached the runtime and not just the request struct.
+#
+# The pids controller lives at a different path on cgroup v1 hosts, and a
+# missing file must not look like a successful probe: `cat` is the last command
+# that could fail, so a missing limit has to be reported as such.
 "$BIN/sandboxctl" run --image python:3.12-alpine -- \
-  sh -c 'cat /sys/fs/cgroup/pids.max 2>/dev/null; grep -E "^(CapEff|NoNewPrivs):" /proc/self/status' \
+  sh -c 'if [ -r /sys/fs/cgroup/pids.max ]; then cat /sys/fs/cgroup/pids.max;
+         elif [ -r /sys/fs/cgroup/pids/pids.max ]; then cat /sys/fs/cgroup/pids/pids.max;
+         else echo no-pids-controller; fi;
+         grep -E "^NoNewPrivs:" /proc/self/status' \
   >"$OUT/hardening.out" 2>"$OUT/hardening.err"
 check "hardening exit" "the probe command succeeds" "$?" "0"
 contains "hardening pids" "pids limit reaches the cgroup" "$OUT/hardening.out" "1024"
@@ -222,8 +229,14 @@ contains "hardening nonewprivs" "no-new-privileges is set" "$OUT/hardening.out" 
 
 # The fork bomb is what the pids limit exists for. Memory alone does not stop
 # it: a sleeping child costs a task slot, not a page.
-"$BIN/sandboxctl" run --image python:3.12-alpine -- python3 -c '
-import os, sys, time
+#
+# It runs only when the effective limit was just verified. On a host where
+# Docker ignored the limit (rootless Docker is documented to do this when its
+# cgroup requirements are unmet) the probe would otherwise fork thousands of
+# children on the host before reporting the failure it already knows about.
+if grep -qx '1024' "$OUT/hardening.out"; then
+  "$BIN/sandboxctl" run --image python:3.12-alpine -- python3 -c '
+import os, time
 kids = []
 try:
     for _ in range(5000):
@@ -236,13 +249,28 @@ except OSError:
     pass
 print(len(kids))
 ' >"$OUT/fork.out" 2>"$OUT/fork.err"
-code=$?
-forks=$(tr -dc '0-9' <"$OUT/fork.out")
-check "fork exit" "a fork bomb does not kill the command" "$code" "0"
-if [ -n "$forks" ] && [ "$forks" -lt 2000 ]; then
-  pass "fork bounded"
+  code=$?
+  forks=$(tr -dc '0-9' <"$OUT/fork.out")
+  check "fork exit" "a fork bomb does not kill the command" "$code" "0"
+  if [ -n "$forks" ] && [ "$forks" -lt 2000 ]; then
+    pass "fork bounded"
+  else
+    fail "fork bounded" "fork bomb was not bounded by the pids limit" "${forks:-none}" "<2000"
+  fi
+
+  # The fork probe leaves up to a thousand children behind. With a reaping PID
+  # 1 they are collected, so the slots come back; without one they stay as
+  # zombies and this next command cannot fork at all. Asserting a fresh
+  # multi-process command after the bomb is what tests the reaper.
+  "$BIN/sandboxctl" run --image python:3.12-alpine -- \
+    sh -c 'for i in $(seq 1 20); do (true) & done; wait; echo slots-ok' \
+    >"$OUT/after-fork.out" 2>"$OUT/after-fork.err"
+  check "after-fork exit" "the sandbox still forks after the fork bomb" "$?" "0"
+  check "after-fork reaped" "orphaned children were reaped, slots released" \
+    "$(cat "$OUT/after-fork.out")" "slots-ok"
 else
-  fail "fork bounded" "fork bomb was not bounded by the pids limit" "${forks:-none}" "<2000"
+  fail "fork setup" "the pids limit was not observed, the destructive probe is skipped" \
+    "$(head -1 "$OUT/hardening.out")" "1024"
 fi
 
 # Raw sockets need CAP_NET_RAW. Without it Python raises PermissionError; if

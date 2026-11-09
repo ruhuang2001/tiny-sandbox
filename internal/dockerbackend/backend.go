@@ -39,6 +39,10 @@ const PidDir = "/run/tiny-sandbox"
 
 // initCommand keeps the container alive between executions. Every image the
 // backend supports has sh and sleep; `sleep infinity` needs no shell.
+//
+// It is not PID 1: HostConfig.Init puts Docker's init process first, because
+// PID 1 is what reaps orphaned grandchildren and `sleep infinity` never calls
+// wait. Under a pids limit an unreaped zombie is a permanently lost task slot.
 var initCommand = []string{"sleep", "infinity"}
 
 // Hardening defaults. They are fixed by the backend rather than by the request
@@ -98,6 +102,7 @@ func Dial(ctx context.Context, socketPath string) (*Backend, error) {
 func (b *Backend) Create(ctx context.Context, spec daemon.ContainerSpec) (string, error) {
 	limit := int64(spec.MemoryMB) << 20
 	pids := int64(DefaultPidsLimit)
+	initProcess := true
 	cfg := dockerapi.ContainerConfig{
 		Image:  spec.Image,
 		Cmd:    initCommand,
@@ -109,6 +114,7 @@ func (b *Backend) Create(ctx context.Context, spec daemon.ContainerSpec) (string
 			CapDrop:     sandboxCapDrop,
 			SecurityOpt: sandboxSecurityOpt,
 			Tmpfs:       map[string]string{PidDir: "rw,size=1m,mode=1777"},
+			Init:        &initProcess,
 		},
 	}
 
