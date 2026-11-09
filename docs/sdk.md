@@ -46,13 +46,30 @@ ReadFile(ctx, sandboxID, path string) ([]byte, error)
 WriteFile(ctx, sandboxID, path string, data []byte) error
 ```
 
-Optional request fields use pointers (`*int`) so that "unset" and `0` are distinct.
+Optional request fields use pointers (`*int`, `*int64`, `*string`, or `*Action`)
+so that "unset" and an explicit zero value are distinct.
+
+`CreateSandboxRequest` includes these resource controls:
+
+| Field | Type | Default and accepted values |
+|---|---|---|
+| `MemoryMB` | `*int` | 512 MB; minimum 16 |
+| `PidsLimit` | `*int` | 1024 tasks, including threads; minimum 64 |
+| `NanoCPUs` | `*int64` | `0` means unlimited; `1000000000` is one CPU |
+| `Network` | `*string` | `NetworkBridge` (outbound access) or `NetworkNone`; default bridge |
+
+These values are fixed at creation and returned on `Sandbox`. See the
+[HTTP contract](api.md#sandbox) for the remaining fields and timeout defaults.
 
 `ExecuteRequest.TimeoutSeconds` bounds one execution. `Exec` and `ExecStream`
 take no timeout argument, so a caller that needs one calls `StartExecution`
-directly and then `StreamExecution`. A timed-out execution ends with
-`termination_reason: timeout`, which `errors.Is(err, ErrTimeout)` matches, and
-the sandbox is left running.
+directly and then `StreamExecution`. Inspect the returned
+`Execution.TerminationReason` for `ReasonTimeout`: `StreamExecution` does not
+convert execution outcomes into errors. `Exec` and `ExecStream` do perform that
+conversion, so their timeout errors match `errors.Is(err, ErrTimeout)`.
+An execution deadline normally leaves the sandbox running, but the server can
+remove it if it cannot confirm process termination. A sandbox lifetime timeout
+with action `kill` removes the sandbox instead.
 
 `Exec` and `ExecStream` are `StartExecution` followed by `StreamExecution`. When execution completes, they return its Execution together with an error: `nil` only when `termination_reason` is `exited` and `exit_code` is 0.
 
@@ -98,6 +115,10 @@ var (
 2. If the context is already done, return its error without sending anything.
 3. Send the start request, retrying as above with the same key.
 4. If the context ends while the start is in flight, the SDK cannot know whether the server accepted it. Using a fresh context with a 5-second deadline, it repeats the start with the same key (the server returns the existing execution, or creates one if the original request was never accepted), then cancels that execution. Result: `ErrCanceled` with the Execution. If this recovery fails, return `ErrCancelUnconfirmed` with `IdempotencyKey` set, so the caller can clean up.
+
+Reusing a retained key with the same command returns the original execution.
+Changing `TimeoutSeconds` on that replay does not update its deadline; use a
+new key to start a new execution with a different timeout.
 
 ## Streaming
 

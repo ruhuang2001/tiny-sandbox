@@ -71,11 +71,11 @@ examples/agent-tool/     the SDK used as an agent tool function (built and teste
 
 ### Container hardening
 
-The backend fixes limits the HTTP contract does not expose. A caller running
-untrusted code cannot be trusted to choose them, and each one closes a failure
-mode that reaches past the sandbox:
+The backend applies fixed hardening settings and configurable resource limits.
+Together they reduce failure modes that reach past the sandbox, but they do
+not provide hardened isolation or tenant-level quotas:
 
-- **Pids limit, 1024.** A fork bomb costs task slots, not memory, so the memory
+- **Pids limit, default 1024.** A fork bomb costs task slots, not memory, so the memory
   limit alone does not stop it; without a pids limit it runs until the host's
   PID table is empty and every other sandbox stalls. The value counts tasks, so
   a JVM or a Go build still fits.
@@ -121,9 +121,8 @@ for the daemon is not a fix: any fixed ceiling can be reached exactly.
 
 The e2e suite asserts these from the container's own cgroup and `/proc`, not
 from the request struct: a limit that is sent but not applied is the failure
-this check exists to catch. Network access is deliberately unchanged, and
-making it controllable is a create-time decision, because Docker cannot change
-a container's network after creation.
+this check exists to catch. It also checks explicit PID and CPU limits and
+the `none` network mode.
 
 ### Executions and streaming
 
@@ -310,7 +309,7 @@ Three layers, each answering a different question:
 Rules:
 
 - The existing suite includes unit, contract, and end-to-end checks. Prefer real-Docker end-to-end scenarios for new behavior changes, with repeatable evidence. See [Contributing](../CONTRIBUTING.md).
-- Coverage is measured twice: `go test -coverprofile` for the unit and contract layers, and `-coverpkg` counted during the end-to-end run for the Docker backend and CLI. CI merges both profiles and gates on the merged number (70%).
+- Coverage is measured twice: `go test -covermode=atomic -coverpkg=./...` for the unit and contract layers, and binaries built with `-cover -covermode=atomic -coverpkg=./...` during the end-to-end run. CI merges both covdata directories and gates on the merged number (70%).
 - The end-to-end suite writes evidence under `artifacts/<stage>/`: the commands run, raw SSE transcripts, cgroup counters, JSON responses, server logs, and the final container list. These artifacts are generated locally or uploaded by CI; they are not committed.
 - `api/openapi.yaml` and the router must not drift: a test parses the spec's path set and compares it both ways with the routes the server registers.
 - Anything not actually run is labelled `not run` in the documentation. Local `act` runs are not reported as remote CI.
@@ -322,9 +321,9 @@ One workflow, four jobs:
 | Job | Contents |
 |---|---|
 | `lint` | `golangci-lint` at a pinned version, `go vet` |
-| `test` | unit and contract tests under `-race`, merged coverage gate |
-| `build` | `go build ./...`, both commands, the example, `goreleaser check` |
-| `e2e` | Docker-backed suite with coverage instrumentation; uploads `artifacts/`; asserts no containers remain |
+| `test` | unit and contract tests under `-race`, coverage artifact |
+| `build` | `go build ./...`, both commands, the example, `goreleaser check`, six snapshot archives and checksum verification |
+| `e2e` | Docker-backed suite with coverage instrumentation; enforces the merged coverage gate; uploads `artifacts/`; asserts no containers remain |
 
 CI builds GoReleaser snapshots: six platform archives plus a checksum file. There is no automatic tag-release workflow. Versioning follows semantic versioning at the repository level; CLI flags, environment variables, JSON fields, error types, timeout units, and SSE event semantics are all part of the compatibility surface. [versioning.md](versioning.md) holds the details, and [competitors.md](competitors.md)
 records which parts of the E2B and Daytona client surfaces this design keeps

@@ -6,6 +6,9 @@ The Go module, `sandboxctl`, and `sandboxd` share one version number. CI builds 
 
 Release tags use `vMAJOR.MINOR.PATCH`.
 
+The OpenAPI `info.version` follows the release version. The `/v1` HTTP path
+prefix is the API namespace, not a claim that the project has reached v1.0.0.
+
 - **patch** fixes behaviour without changing the public contract;
 - **minor** adds a backward-compatible operation, field, or flag;
 - **major** may remove or reinterpret public API.
@@ -56,6 +59,30 @@ Inspect the six platform archives in `dist/` and verify `checksums.txt`
 (`sha256sum -c checksums.txt`, or `shasum -a 256 -c checksums.txt` on macOS,
 from that directory). `--snapshot` creates local artifacts without publishing.
 Publishing a release is a separate action from this verification checklist.
+
+## Publish manually
+
+After the checklist passes, use a clean checkout of the intended release
+commit. The example below publishes `v0.0.1`; change the version consistently
+for later releases.
+
+```sh
+git tag -a v0.0.1 -m 'v0.0.1'
+goreleaser release --clean --skip=publish
+(cd dist && shasum -a 256 -c checksums.txt)
+git push origin v0.0.1
+gh release create v0.0.1 --verify-tag --title v0.0.1 \
+  --notes-file /path/to/release-notes.md \
+  dist/tiny-sandbox_0.0.1_*.tar.gz \
+  dist/tiny-sandbox_0.0.1_*.zip dist/checksums.txt
+```
+
+The build command creates versioned release artifacts, not snapshots.
+Publishing requires GitHub authentication and write access; pushing a tag alone
+does not publish binaries. Write the release notes before running the final
+command. After publication, download the six archives and `checksums.txt` from
+the Release, verify all hashes, and check the native binaries' version output
+(`sandboxctl version` and `sandboxd -version`).
 
 ## Rollback
 

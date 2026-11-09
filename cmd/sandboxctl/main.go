@@ -43,13 +43,17 @@ run flags:
   --sandbox ID          use an existing sandbox instead of creating one
   --image NAME          image for a new sandbox
   --memory MB           memory limit
+  --pids-limit N        task limit (default 1024, minimum 64)
+  --nano-cpus N         CPU limit in units of 1e-9 CPUs (0 is unlimited)
+  --network MODE        bridge (default) or none
   --timeout S           lifetime timeout in seconds
   --timeout-action A    kill or pause
   --idle-timeout S      idle timeout in seconds
   --idle-action A       kill or pause
+  --exec-timeout S      timeout for this command in seconds (0 disables)
   --rm                  kill the sandbox after the command
 
-global flags (before or after the command):
+global flags (before the command):
   --domain URL          server base URL
   --api-key KEY         API key
 

@@ -198,8 +198,8 @@ type CreateRequest struct {
 //
 // TimeoutSeconds bounds one execution. A nil pointer or zero means the
 // execution has no deadline of its own and runs until it finishes, is
-// canceled, or the sandbox it runs in reaches its lifetime deadline. The
-// sandbox lifetime still applies: whichever deadline comes first wins.
+// canceled, or the sandbox is killed. The sandbox lifetime policy still
+// applies: it can kill or pause the sandbox.
 type ExecuteRequest struct {
 	Command        []string `json:"command"`
 	IdempotencyKey string   `json:"idempotency_key,omitempty"`

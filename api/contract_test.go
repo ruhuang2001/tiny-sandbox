@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -11,7 +12,54 @@ import (
 	"github.com/ruhuang2001/tiny-sandbox/api"
 	"github.com/ruhuang2001/tiny-sandbox/internal/daemon"
 	"github.com/ruhuang2001/tiny-sandbox/internal/daemon/membackend"
+	sandbox "github.com/ruhuang2001/tiny-sandbox/sandbox-go"
+	"gopkg.in/yaml.v3"
 )
+
+func TestSpecFieldsMatchRequestAndSandboxTypes(t *testing.T) {
+	var doc struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]yaml.Node `yaml:"properties"`
+			} `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(api.Spec(), &doc); err != nil {
+		t.Fatalf("parse embedded spec: %v", err)
+	}
+	for _, tc := range []struct {
+		schema string
+		value  any
+	}{
+		{"CreateSandboxRequest", daemon.CreateRequest{}},
+		{"CreateSandboxRequest", sandbox.CreateSandboxRequest{}},
+		{"ExecuteRequest", daemon.ExecuteRequest{}},
+		{"ExecuteRequest", sandbox.ExecuteRequest{}},
+		{"Sandbox", daemon.Sandbox{}},
+		{"Sandbox", sandbox.Sandbox{}},
+	} {
+		typ := reflect.TypeOf(tc.value)
+		t.Run(tc.schema+"/"+typ.PkgPath(), func(t *testing.T) {
+			properties := doc.Components.Schemas[tc.schema].Properties
+			fields := make(map[string]bool)
+			for i := range typ.NumField() {
+				name := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
+				if name == "" || name == "-" {
+					continue
+				}
+				fields[name] = true
+				if _, ok := properties[name]; !ok {
+					t.Errorf("OpenAPI %s is missing field %s", tc.schema, name)
+				}
+			}
+			for name := range properties {
+				if !fields[name] {
+					t.Errorf("%s is missing OpenAPI field %s", typ, name)
+				}
+			}
+		})
+	}
+}
 
 // TestSpecMatchesAPIMD checks that api/openapi.yaml and docs/api.md describe
 // the same operations. api.md is the prose contract; the spec is its

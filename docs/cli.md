@@ -38,6 +38,13 @@ usage error (exit 2) for every numeric flag. `--memory` has no "disabled" value:
 zero reaches the server and is rejected with an API error, because the server's
 minimum is 16 MB.
 
+Resource defaults are 512 MB memory, 1024 tasks (including threads), no CPU
+limit, and bridge networking. `--pids-limit` must be at least 64: zero or a
+negative value is a usage error, and values 1 through 63 are rejected by the
+server. `--nano-cpus 1000000000` limits the sandbox to one CPU; `0` is unlimited.
+`--network none` disables external networking. These options only apply when
+creating a sandbox.
+
 ## Status lines (stderr)
 
 These formats are stable; end-to-end tests match them.
@@ -74,7 +81,7 @@ other non-command failure.
 | 401 | `set a valid SANDBOX_API_KEY or --api-key` |
 | 404 | `check the sandbox and execution IDs` |
 | `oom` | `increase --memory or reduce the command's memory use` |
-| `timeout` | `increase --timeout` |
+| `timeout` | `increase --timeout or --exec-timeout` |
 | `evicted` | `the container was stopped outside sandboxd` |
 | `busy` | `wait for the running execution or cancel it` |
 

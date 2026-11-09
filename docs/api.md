@@ -118,8 +118,9 @@ Pausing freezes every process in the sandbox, including a running execution, whi
 ### Execution timeout
 
 An execution may carry its own `timeout_seconds` on the start request. It is
-independent of the sandbox lifetime deadline: whichever comes first ends the
-command.
+independent of the sandbox lifetime policy. A lifetime timeout with action
+`kill` ends the sandbox and its command; action `pause` freezes the command
+until the sandbox resumes.
 
 - Omitted or `0` means the execution has no deadline of its own; it runs until
   it finishes, is canceled, or the sandbox lifetime ends it.
@@ -136,8 +137,9 @@ command.
 - A pause that begins before the deadline does not stop it. The server applies
   the timeout on the first reaper beat after the sandbox is running again.
 
-The reaper observes deadlines at most one second apart, so the recorded end can
-be up to that much later than the deadline.
+The reaper has a nominal one-second interval. Pauses, backend calls, signal
+grace periods, and lock contention can delay termination beyond the deadline;
+the interval is not a hard upper bound.
 
 ### Idle timeout
 
@@ -204,7 +206,7 @@ No body. `200` Sandbox. Idempotent per the transition table.
 - `timeout_seconds` is optional and bounds this execution. Omitted or `0` means no deadline of its own. The sandbox lifetime deadline still applies, and whichever comes first wins. See [execution timeout](#execution-timeout).
 - `201` with the new Execution (`state: running`).
 - State validation precedes idempotency lookup: a killed or pending sandbox rejects the start, including a replay; a paused sandbox resumes first.
-- Same key and same command as an existing execution: `200` with that execution, in whatever state it is now. No new process starts.
+- Same key and same command as an existing execution: `200` with that execution, in whatever state it is now. No new process starts; a different `timeout_seconds` on the replay does not change its deadline.
 - Same key with a different command: `409 idempotency_conflict`.
 - Another execution is running: `409 busy`. One running execution per sandbox keeps container-wide OOM evidence attributable to a single execution.
 

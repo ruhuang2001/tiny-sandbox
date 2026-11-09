@@ -51,8 +51,21 @@ func TestVersionAndHelp(t *testing.T) {
 	if got := h.invoke("version"); got.code != 0 || strings.TrimSpace(got.stdout) != version {
 		t.Fatalf("version = %+v", got)
 	}
-	if got := h.invoke("help"); got.code != 0 || !strings.Contains(got.stdout, "usage:") {
-		t.Fatalf("help = %+v", got)
+	help := h.invoke("help")
+	if help.code != 0 || !strings.Contains(help.stdout, "usage:") {
+		t.Fatalf("help = %+v", help)
+	}
+	for _, flag := range []string{
+		"--sandbox", "--image", "--memory", "--pids-limit", "--nano-cpus",
+		"--network", "--timeout", "--timeout-action", "--idle-timeout",
+		"--idle-action", "--exec-timeout", "--rm", "--domain", "--api-key",
+	} {
+		if !strings.Contains(help.stdout, flag) {
+			t.Errorf("help does not document %s", flag)
+		}
+	}
+	if !strings.Contains(help.stdout, "global flags (before the command):") {
+		t.Errorf("help must document global flag placement: %s", help.stdout)
 	}
 	if got := h.invoke("nonsense"); got.code != 2 {
 		t.Fatalf("unknown command = %+v", got)

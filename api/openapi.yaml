@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: tiny-sandbox
-  version: 1.0.0
+  version: 0.0.1
   summary: Code-execution sandbox for AI agents
   description: |
     Normative HTTP contract for the tiny-sandbox reference server.
@@ -219,8 +219,10 @@ paths:
         Runs argv without a shell. One execution runs per sandbox; an
         overlapping start returns 409 busy, which keeps container-wide OOM
         evidence attributable to a single execution. Starting in a paused
-        sandbox resumes it first. An execution whose command or idempotency key
-        is reused is returned instead of started again.
+        sandbox resumes it first. Reusing an idempotency key with the same
+        command returns the retained execution instead of starting it again;
+        the same command without a retained key starts a new execution.
+        Reusing a key with a different command returns 409 idempotency_conflict.
       requestBody:
         required: true
         content:
@@ -759,15 +761,19 @@ components:
           description: >-
             Optional. Scoped to the sandbox. Reusing a key with the same
             command returns the existing execution; reusing it with a different
-            command is 409 idempotency_conflict.
+            command is 409 idempotency_conflict. Changing timeout_seconds on a
+            replay does not change the existing execution's deadline.
         timeout_seconds:
           type: integer
           minimum: 0
           description: >-
             Optional. Bounds this execution, in seconds. Omitted or 0 means the
             execution has no deadline of its own. The sandbox lifetime deadline
-            still applies, and whichever comes first ends the command with
-            termination_reason timeout while leaving the sandbox running.
+            still applies. An execution deadline ends the command with
+            termination_reason timeout and normally leaves the sandbox running;
+            failure to confirm process termination can require container removal.
+            A sandbox lifetime deadline with timeout_action kill removes the
+            sandbox; timeout_action pause pauses it instead.
     ExecutionSummary:
       type: object
       required:
