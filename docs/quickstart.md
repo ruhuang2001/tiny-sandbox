@@ -6,9 +6,9 @@ You need a running Docker daemon and the Docker CLI. No Git
 clone, Go installation, local Python, or model API key is needed. First use
 requires network access to GitHub and the container image registry.
 
-This walkthrough uses a macOS or Linux shell. On Windows, use the Linux
-binaries inside WSL2 with a reachable Docker Unix socket. Native Windows
-Docker named pipes are not supported by the server.
+This walkthrough supports macOS and Linux on amd64 and arm64, with a reachable
+Docker Unix socket. Windows is not supported, and no Windows binaries are
+published. WSL2 is not a tested or supported environment.
 
 ## 1. Install
 

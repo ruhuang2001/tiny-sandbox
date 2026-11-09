@@ -14,8 +14,12 @@ client, and HTTP API.
 
 ## Install
 
-On macOS or Linux (including WSL2), paste this command to download the latest
+On macOS or Linux, paste this command to download the latest
 release into `$HOME/tiny-sandbox-quickstart`. Docker is required to run it.
+
+Supported platforms are macOS and Linux on amd64 and arm64. Windows is not
+supported, and no Windows binaries are published. WSL2 is not a tested or
+supported environment.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ruhuang2001/tiny-sandbox/main/scripts/install.sh | sh

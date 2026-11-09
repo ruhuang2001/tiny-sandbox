@@ -81,13 +81,25 @@ jobs:
         with:
           version: '~> v2'
           args: release --snapshot --clean
-      - name: verify checksums and archive count
+      - name: verify checksums and supported platform archives
         run: |
-          cd dist
-          sha256sum -c --quiet checksums.txt
-          count=$(ls -1 tiny-sandbox_*_*.tar.gz tiny-sandbox_*_*.zip 2>/dev/null | wc -l | tr -d ' ')
-          echo "archives: $count"
-          test "$count" -eq 6
+          python3 - <<'PY'
+          import json
+          import pathlib
+          dist = pathlib.Path("dist")
+          version = json.loads((dist / "metadata.json").read_text())["version"]
+          expected = {
+              f"tiny-sandbox_{version}_{system}_{arch}.tar.gz"
+              for system in ["linux", "darwin"]
+              for arch in ["amd64", "arm64"]
+          }
+          actual = {p.name for p in dist.glob("*.tar.gz")} | {p.name for p in dist.glob("*.zip")}
+          assert actual == expected, (actual, expected)
+          checksums = (dist / "checksums.txt").read_text().splitlines()
+          assert len(checksums) == len(expected), checksums
+          assert {line.split()[1] for line in checksums} == expected, checksums
+          PY
+          (cd dist && sha256sum -c --quiet checksums.txt)
       - uses: actions/upload-artifact@v4
         with:
           name: release-snapshot

@@ -1,6 +1,7 @@
 # Contributing
 
-Requires Go 1.27 or newer and a reachable Docker daemon. Build the server and
+Requires macOS or Linux, Go 1.27 or newer, and a reachable Docker Unix socket.
+Windows and WSL2 are not supported. Build the server and
 CLI with `make build`; see the [quick start](README.md#quick-start) for usage.
 
 ## Local checks
@@ -18,7 +19,7 @@ mkdir -p artifacts/cov-unit
 go test -race -covermode=atomic -coverpkg=./... ./... \
   -args -test.gocoverdir="$PWD/artifacts/cov-unit"
 bash scripts/coverage.sh artifacts/cov-unit artifacts/e2e/coverage 70
-goreleaser release --snapshot --clean       # six archives plus checksums
+goreleaser release --snapshot --clean       # four archives plus checksums
 ```
 
 CI runs four jobs: `lint`, `test` (race plus coverage), `build` (every command,

@@ -8,7 +8,7 @@ main() {
   case "$(uname -s)" in
     Darwin) platform=darwin ;;
     Linux) platform=linux ;;
-    *) echo "Use macOS, Linux, or WSL2." >&2; exit 1 ;;
+    *) echo "Supported platforms: macOS and Linux. Windows is not supported." >&2; exit 1 ;;
   esac
   case "$(uname -m)" in
     arm64|aarch64) arch=arm64 ;;

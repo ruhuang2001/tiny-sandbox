@@ -100,12 +100,15 @@ jobs:
           assert metadata["version"] == version, metadata
           assert metadata["commit"] == os.environ["RELEASE_SHA"], metadata
           expected = {
-              f"tiny-sandbox_{version}_{system}_{arch}.{extension}"
-              for system, extension in [("linux", "tar.gz"), ("darwin", "tar.gz"), ("windows", "zip")]
+              f"tiny-sandbox_{version}_{system}_{arch}.tar.gz"
+              for system in ["linux", "darwin"]
               for arch in ["amd64", "arm64"]
           }
           actual = {p.name for p in dist.glob("*.tar.gz")} | {p.name for p in dist.glob("*.zip")}
           assert actual == expected, (actual, expected)
+          checksums = (dist / "checksums.txt").read_text().splitlines()
+          assert len(checksums) == len(expected), checksums
+          assert {line.split()[1] for line in checksums} == expected, checksums
           PY
           (cd dist && sha256sum -c checksums.txt)
           mkdir -p "$RUNNER_TEMP/release-smoke"
@@ -118,7 +121,6 @@ jobs:
           name: release-${{ needs.resolve.outputs.tag }}
           path: |
             dist/*.tar.gz
-            dist/*.zip
             dist/checksums.txt
           retention-days: 7
       - name: upload to draft and verify before publishing
@@ -141,11 +143,11 @@ jobs:
             flags+=(--clobber)
           fi
           gh release upload "$RELEASE_TAG" "${flags[@]}" \
-            dist/*.tar.gz dist/*.zip dist/checksums.txt
+            dist/*.tar.gz dist/checksums.txt
           download="$RUNNER_TEMP/release-download"
           mkdir -p "$download"
           gh release download "$RELEASE_TAG" --dir "$download"
-          test "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')" -eq 7
+          test "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')" -eq 5
           cmp dist/checksums.txt "$download/checksums.txt"
           (cd "$download" && sha256sum -c checksums.txt)
           gh release view "$RELEASE_TAG" --json body --jq .body > "$RUNNER_TEMP/release-notes.md"

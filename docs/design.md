@@ -330,10 +330,11 @@ The reusable CI workflow has four jobs:
 |---|---|
 | `lint` | `golangci-lint` at a pinned version, `go vet` |
 | `test` | unit and contract tests under `-race`, coverage artifact |
-| `build` | `go build ./...`, both commands, the example, `goreleaser check`, six snapshot archives and checksum verification |
+| `build` | `go build ./...`, both commands, the example, `goreleaser check`, four snapshot archives and checksum verification |
 | `e2e` | Docker-backed suite with coverage instrumentation; enforces the merged coverage gate; uploads `artifacts/`; asserts no containers remain |
 
-CI builds GoReleaser snapshots: six platform archives plus a checksum file.
+CI builds GoReleaser snapshots: four platform archives (Linux/macOS on
+amd64/arm64) plus a checksum file. Windows is not supported.
 The Release workflow calls those same four jobs against the exact tagged
 commit, then builds and publishes non-snapshot artifacts. It supports tag
 pushes and manual dispatch for existing tags, verifies downloaded draft

@@ -5,6 +5,11 @@ CI builds GoReleaser snapshots as workflow artifacts. The separate Release
 workflow validates a release tag through the same CI before building and
 publishing versioned binaries.
 
+Supported release targets are Linux and macOS (`linux` and `darwin`), each on
+amd64 and arm64. Each of the four `.tar.gz` archives contains `sandboxd` and
+`sandboxctl`. Windows is not supported; Windows binaries and ZIP archives are
+not published. WSL2 is not a tested or supported environment.
+
 ## Version numbers
 
 Release tags use `vMAJOR.MINOR.PATCH`.
@@ -58,7 +63,7 @@ a reachable Docker daemon, the Docker CLI and curl; missing container
 images also require registry access. The script starts its own server on port
 18081 by default; set `E2E_PORT` if that port is occupied.
 
-Inspect the six platform archives in `dist/` and verify `checksums.txt`
+Inspect the four platform archives in `dist/` and verify `checksums.txt`
 (`sha256sum -c checksums.txt`, or `shasum -a 256 -c checksums.txt` on macOS,
 from that directory). `--snapshot` creates local artifacts without publishing.
 Publishing a release is a separate action from this verification checklist.
@@ -83,7 +88,7 @@ gh workflow run release.yml --ref main -f tag=v0.0.1
 
 The workflow resolves the tag to an immutable commit on `main`, runs all four
 CI jobs against that commit, and only then grants the publishing job
-`contents: write`. It builds six non-snapshot archives, verifies their
+`contents: write`. It builds four non-snapshot archives, verifies their
 checksums and native version output, uploads to a draft, downloads the
 attachments again, and checks them against the CI build before publishing.
 The release notes include a link to the responsible Actions run.
@@ -101,7 +106,7 @@ That option deletes and replaces same-name draft attachments; it does not
 delete the draft or move the tag. It defaults to false. The CI-built archives
 and checksums are also retained as an Actions artifact for seven days.
 
-After publication, download the six archives and `checksums.txt` from the
+After publication, download the four archives and `checksums.txt` from the
 Release, verify all hashes, and check the native binaries' version output
 (`sandboxctl version` and `sandboxd -version`). Do not upload local binaries
 as a substitute for this workflow.
