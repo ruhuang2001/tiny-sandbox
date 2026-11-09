@@ -26,10 +26,13 @@ type ExecOutcome struct {
 // docs/api.md: recorded intent, then a positive delta in the cgroup oom_kill
 // counter, then container liveness, then the exit code.
 //
-// The liveness step is where the earlier build went wrong: `docker inspect`
-// intermittently misses a container record, so one "not running" answer after
-// a 137 is not proof of anything. A 137 with no intent and no OOM delta is
-// therefore re-sampled a few times; only a consistent answer decides.
+// The liveness step is where two builds went wrong. `docker inspect` used to
+// intermittently miss a container record, so one "not running" answer after a
+// 137 proves nothing. And right after an external kill the daemon can still
+// report "running" for a moment, so one "alive" answer proves nothing either.
+// A 137 with no intent and no OOM delta is therefore sampled across the whole
+// window, and the last observation decides: the state has had time to settle
+// in both directions.
 func classify(ctx context.Context, s sampler, containerID string, oomBaseline int64, exitCode int, intent *intentRecord, sleep SleepFunc) ExecOutcome {
 	if intent != nil {
 		switch intent.reason {
@@ -53,19 +56,34 @@ func classify(ctx context.Context, s sampler, containerID string, oomBaseline in
 		samples = ambiguousSamples
 	}
 
+	// Sample the whole window and decide on the last observation, rather than
+	// stopping at the first "alive" answer.
+	//
+	// Both directions of staleness exist. A container record can briefly be
+	// absent before it settles (the false-negative this re-sampling was built
+	// for), and right after an external kill it can briefly still report
+	// "running" before the daemon records the stop (the false-positive that
+	// made CI classify a `docker kill` as a clean exit). Breaking on the first
+	// alive answer only guards the first; waiting for the state to settle
+	// guards both, at the cost of one sampling window on the 137 path.
 	liveness := LivenessRunning
 	var lastErr error
+	observed := false
 	for i := 0; i < samples; i++ {
 		if i > 0 && !sleep(ctx, ambiguousInterval) {
 			break
 		}
-		liveness, lastErr = s.Liveness(ctx, containerID)
-		if lastErr == nil && liveness.Alive() {
-			break
+		answer, err := s.Liveness(ctx, containerID)
+		if err != nil {
+			lastErr = err
+			continue
 		}
+		lastErr = nil
+		liveness = answer
+		observed = true
 	}
 
-	if lastErr != nil {
+	if !observed && lastErr != nil {
 		// The container could not be observed at all: the runtime failed, not
 		// the process. Treat it as the container being lost so the sandbox
 		// does not claim a clean exit while its container is unaccounted for.

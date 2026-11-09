@@ -55,12 +55,14 @@ func WithCancelDeadline(d time.Duration) Option { return func(s *Sandboxes) { s.
 const OwnerLabelKey = "tiny-sandbox.owner"
 
 // Ambiguity re-sampling: after an exit code of 137 with no recorded intent and
-// no OOM delta, container liveness is sampled again a few times, because a
-// container record can settle slowly. Any "alive" answer means the process
-// exited on its own; a consistent "not alive" answer means the container went
-// away.
+// no OOM delta, container liveness is sampled across this window and the last
+// observation decides. The window is wide enough for both directions of stale
+// state to settle: a record that is briefly missing, and one that still says
+// "running" for a few milliseconds after an external kill. The 137 path is the
+// only one that pays this cost, and it is small next to the five-second
+// eviction budget in api.md.
 const (
-	ambiguousSamples  = 3
+	ambiguousSamples  = 5
 	ambiguousInterval = 50 * time.Millisecond
 )
 

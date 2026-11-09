@@ -167,10 +167,12 @@ func TestClassificationPrecedence(t *testing.T) {
 	})
 }
 
-// TestAmbiguous137Race is the race the design notes call out: `docker inspect`
-// intermittently misses the container record right after an exit, so a single
-// "not running" answer after a 137 must not decide the reason. Classification
-// re-samples, and any alive answer proves the process exited on its own.
+// TestAmbiguous137Race is the race the design notes call out, in both
+// directions. `docker inspect` intermittently misses a container record right
+// after an exit, and right after an external kill the daemon can still report
+// "running" for a few milliseconds. Neither a single miss nor a single
+// "running" answer decides; the state is sampled across the whole window and
+// the last observation is the settled one.
 func TestAmbiguous137Race(t *testing.T) {
 	ctx := context.Background()
 
@@ -195,6 +197,25 @@ func TestAmbiguous137Race(t *testing.T) {
 		}
 	})
 
+	// The mirror image, and the reason CI failed: the daemon keeps answering
+	// "running" for a moment after an external kill. Breaking on the first
+	// alive answer classified a `docker kill` as a clean exit.
+	t.Run("a stale running answer settles into evicted", func(t *testing.T) {
+		h, be := newScripted(t,
+			daemon.LivenessRunning, // still stale right after the kill
+			daemon.LivenessRunning,
+			daemon.LivenessStopped, // the daemon records the stop
+		)
+		be.Programs["exit"] = memExit
+		sb := h.create(daemon.CreateRequest{})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{Command: []string{"exit", "137"}})
+		wantNoError(t, err)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if *done.TerminationReason != daemon.ReasonEvicted {
+			t.Fatalf("reason = %s, want evicted: a stale running answer must not decide", *done.TerminationReason)
+		}
+	})
+
 	t.Run("a consistent miss is evicted", func(t *testing.T) {
 		h, be := newScripted(t, daemon.LivenessMissing)
 		be.Programs["exit"] = memExit
@@ -207,6 +228,21 @@ func TestAmbiguous137Race(t *testing.T) {
 		}
 		if be.livenessCalls() < 3 {
 			t.Fatalf("liveness asked %d times; a 137 must be sampled repeatedly", be.livenessCalls())
+		}
+	})
+
+	t.Run("a consistently alive container is exited", func(t *testing.T) {
+		h, be := newScripted(t, daemon.LivenessRunning)
+		be.Programs["exit"] = memExit
+		sb := h.create(daemon.CreateRequest{})
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{Command: []string{"exit", "137"}})
+		wantNoError(t, err)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if *done.TerminationReason != daemon.ReasonExited {
+			t.Fatalf("reason = %s, want exited: an in-sandbox kill leaves the container alive", *done.TerminationReason)
+		}
+		if be.livenessCalls() < 3 {
+			t.Fatalf("liveness asked %d times; the 137 path must sample the window", be.livenessCalls())
 		}
 	})
 
