@@ -280,9 +280,12 @@ Recorded because earlier builds hit them, not as hypotheticals:
 1. **137 is not OOM.** Order: intent, cgroup `oom_kill` delta, container liveness, exit code. Handle the container-record race explicitly.
 2. **The cancellation gap.** Between "start accepted" and "execution ID received" the client does not know whether work exists. Recover with the same idempotency key; never report success silently.
 3. **The CLI bypass.** Any CLI path that talks HTTP directly skips SDK recovery logic. Restrict direct HTTP to the health probe.
-4. **Unbounded server memory.** Output retention, event count, and upload size all need contract-level limits; a single `yes` otherwise exhausts the daemon.
-5. **Pause must be measured, not asserted.** Prove it with a counter that advances across pause and resume, not with the state field.
-6. **Documentation bloat.** Evidence goes in `artifacts/`; prose stays readable.
+4. **Unbounded server memory.** Output retention, event count, execution history, and upload size all need contract-level limits; a single `yes` otherwise exhausts the daemon. History is capped at 200 executions per sandbox; the evicted record and its idempotency key go together.
+5. **A chunk boundary is a byte boundary, not a character boundary.** Output events are JSON strings encoded one at a time, so a cut inside a UTF-8 sequence becomes two U+FFFD and the bytes are gone. The pump carries an incomplete trailing rune into the next read, and the splitter backs up to a rune boundary. A test pins it.
+6. **Cleanup must not inherit the caller's deadline.** The cancel escalation and container removal run on `context.WithoutCancel` with their own bounds. A client that gives up on the request would otherwise skip SIGTERM's grace and destroy the sandbox.
+7. **A background reader must be joined.** The SSE ping goroutine writes to the response writer; the handler waits for it before returning, because net/http reuses that writer for the next request on the connection.
+8. **Pause must be measured, not asserted.** Prove it with a counter that advances across pause and resume, not with the state field.
+9. **Documentation bloat.** Evidence goes in `artifacts/`; prose stays readable.
 
 ## Further reading
 

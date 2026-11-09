@@ -2,6 +2,8 @@ package daemon_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -314,4 +316,147 @@ func memFlood(_ context.Context, args []string) (string, string, int) {
 		b.WriteString(pattern)
 	}
 	return b.String()[:n], "", 0
+}
+
+// TestUTF8SurvivesChunkBoundaries pins the rule that no output event ends
+// inside a UTF-8 sequence. Output events are JSON strings encoded one event at
+// a time, so a rune split across two events would arrive as two U+FFFD
+// replacement characters and the bytes the program wrote would be lost.
+func TestUTF8SurvivesChunkBoundaries(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a rune straddling the per-event limit", func(t *testing.T) {
+		h := newHarness(t)
+		sb := h.create(daemon.CreateRequest{})
+		// Pad to one byte before the limit, then a three-byte character: the
+		// cut lands inside it.
+		pad := strings.Repeat("a", daemon.MaxEventDataBytes-1)
+		h.be.Streamers["spew"] = func(_ context.Context, write func([]byte, []byte) error) int {
+			if err := write([]byte(pad+"中文\n"), nil); err != nil {
+				return 1
+			}
+			return 0
+		}
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{Command: []string{"spew"}})
+		wantNoError(t, err)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		want := pad + "中文\n"
+		if done.Stdout != want {
+			t.Fatalf("retained output lost bytes across the boundary: %d bytes, want %d", len(done.Stdout), len(want))
+		}
+
+		st, err := h.s.Events(sb.ID, ex.ID, 0)
+		wantNoError(t, err)
+		defer st.Close()
+		var replayed strings.Builder
+		for _, ev := range collect(t, st) {
+			if ev.Type != daemon.EventStdout {
+				continue
+			}
+			// Round-trip through the same encoding the handler uses: that is
+			// where a split rune would become U+FFFD.
+			payload, err := json.Marshal(map[string]string{"data": string(ev.Data)})
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			var back struct{ Data string }
+			if err := json.Unmarshal(payload, &back); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			replayed.WriteString(back.Data)
+		}
+		if replayed.String() != want {
+			t.Fatalf("SSE round trip changed the output: %q", replayed.String())
+		}
+	})
+
+	t.Run("a stream that ends mid-sequence is delivered at EOF", func(t *testing.T) {
+		h := newHarness(t)
+		sb := h.create(daemon.CreateRequest{})
+		h.be.Streamers["odd"] = func(_ context.Context, write func([]byte, []byte) error) int {
+			// 0xe4 starts a three-byte sequence that never completes.
+			if err := write([]byte{'a', 0xe4, 0xb8}, nil); err != nil {
+				return 1
+			}
+			return 0
+		}
+		ex, _, err := h.s.StartExecution(ctx, sb.ID, daemon.ExecuteRequest{Command: []string{"odd"}})
+		wantNoError(t, err)
+		done := h.waitCompleted(sb.ID, ex.ID)
+		if done.Stdout != "a\xe4\xb8" {
+			t.Fatalf("stdout = % x, want the raw bytes at EOF", done.Stdout)
+		}
+	})
+}
+
+// TestEventStreamRejectsACursorBeyondTheLog pins the rule that a Last-Event-ID
+// past the newest event is invalid. No such event will ever exist, so a
+// running execution would otherwise make the caller wait for a replay that
+// cannot arrive.
+func TestEventStreamRejectsACursorBeyondTheLog(t *testing.T) {
+	h := newHarness(t)
+	sb := h.create(daemon.CreateRequest{})
+	h.be.Programs["echo"] = memEcho
+	ex, _, err := h.s.StartExecution(context.Background(), sb.ID, daemon.ExecuteRequest{Command: []string{"echo", "hi"}})
+	wantNoError(t, err)
+	h.waitCompleted(sb.ID, ex.ID)
+
+	if _, err := h.s.Events(sb.ID, ex.ID, 99); err == nil {
+		t.Fatal("a cursor beyond the newest event was accepted")
+	} else {
+		wantCode(t, err, daemon.CodeInvalidRequest)
+	}
+
+	// The newest event ID itself is valid: it asks for nothing and closes.
+	newest, err := h.s.LastEventID(sb.ID, ex.ID)
+	wantNoError(t, err)
+	st, err := h.s.Events(sb.ID, ex.ID, newest)
+	wantNoError(t, err)
+	defer st.Close()
+	if events, _, err := st.Next(context.Background()); err != nil || len(events) != 0 {
+		t.Fatalf("resume at the newest ID returned %d events, err %v", len(events), err)
+	}
+}
+
+// TestExecutionHistoryIsPruned pins MaxExecutionsPerSandbox: the oldest
+// completed executions and their idempotency keys are dropped, the running one
+// never is.
+func TestExecutionHistoryIsPruned(t *testing.T) {
+	h := newHarness(t)
+	h.be.Programs["echo"] = memEcho
+	sb := h.create(daemon.CreateRequest{TimeoutSeconds: ptr(0)})
+
+	firstID := ""
+	for i := 0; i < daemon.MaxExecutionsPerSandbox+5; i++ {
+		key := fmt.Sprintf("key-%d", i)
+		ex, _, err := h.s.StartExecution(context.Background(), sb.ID, daemon.ExecuteRequest{
+			Command:        []string{"echo", "x"},
+			IdempotencyKey: key,
+		})
+		wantNoError(t, err)
+		if firstID == "" {
+			firstID = ex.ID
+		}
+		h.waitCompleted(sb.ID, ex.ID)
+	}
+
+	list, err := h.s.ListExecutions(sb.ID)
+	wantNoError(t, err)
+	if len(list) != daemon.MaxExecutionsPerSandbox {
+		t.Fatalf("history holds %d executions, want %d", len(list), daemon.MaxExecutionsPerSandbox)
+	}
+	if _, err := h.s.GetExecution(sb.ID, firstID); err == nil {
+		t.Fatal("the oldest execution survived the retention limit")
+	}
+
+	// The evicted key no longer replays; a fresh start with it runs again.
+	ex, created, err := h.s.StartExecution(context.Background(), sb.ID, daemon.ExecuteRequest{
+		Command:        []string{"echo", "x"},
+		IdempotencyKey: "key-0",
+	})
+	wantNoError(t, err)
+	if !created {
+		t.Fatal("a pruned idempotency key reported an existing execution")
+	}
+	h.waitCompleted(sb.ID, ex.ID)
 }

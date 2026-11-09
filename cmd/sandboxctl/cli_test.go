@@ -387,3 +387,73 @@ func (*fakeNotFound) Error() string { return "not found" }
 func (e *fakeNotFound) Is(target error) bool { return target.Error() == "sandbox: not found" }
 
 var _ = json.Marshal
+
+// TestRunForwardsExplicitZeroTimeouts pins the rule that --timeout 0 disables
+// the lifetime timeout. Zero used to mean "flag not given", so the sandbox
+// silently fell back to the 300-second default.
+func TestRunForwardsExplicitZeroTimeouts(t *testing.T) {
+	rf := &runFlags{given: map[string]bool{}}
+	if req := rf.createRequest(); req.TimeoutSeconds != nil || req.IdleTimeoutSeconds != nil {
+		t.Fatalf("unset flags produced timeouts: %+v", req)
+	}
+
+	rf.timeout = 0
+	rf.idleTimeout = 0
+	rf.given["timeout"] = true
+	rf.given["idle-timeout"] = true
+	req := rf.createRequest()
+	if req.TimeoutSeconds == nil || *req.TimeoutSeconds != 0 {
+		t.Fatalf("--timeout 0 was dropped: %+v", req.TimeoutSeconds)
+	}
+	if req.IdleTimeoutSeconds == nil || *req.IdleTimeoutSeconds != 0 {
+		t.Fatalf("--idle-timeout 0 was dropped: %+v", req.IdleTimeoutSeconds)
+	}
+}
+
+// TestRunRejectsNegativeTimeouts checks that a negative value is a usage
+// error rather than a silent default. -1 is included because it used to be
+// the "flag not given" sentinel: an explicit -1 must not pass silently.
+func TestRunRejectsNegativeTimeouts(t *testing.T) {
+	for _, value := range []string{"-1", "-5"} {
+		for _, flagName := range []string{"--timeout", "--idle-timeout", "--memory"} {
+			h := newCLIHarness(t)
+			got := h.invoke("run", flagName, value, "--", "true")
+			if got.code != 2 {
+				t.Errorf("run with %s %s = %+v, want usage error", flagName, value, got)
+			}
+			if !strings.Contains(got.stderr, "must not be negative") {
+				t.Errorf("%s %s stderr = %q", flagName, value, got.stderr)
+			}
+		}
+	}
+}
+
+// TestRunWithZeroTimeoutCreatesAnUndeadlinedSandbox confirms the flag reaches
+// the server, not just the request struct.
+func TestRunWithZeroTimeoutCreatesAnUndeadlinedSandbox(t *testing.T) {
+	h := newCLIHarness(t)
+	h.be.Programs["true"] = func(context.Context, []string) (string, string, int) { return "", "", 0 }
+
+	got := h.invoke("run", "--timeout", "0", "--", "true")
+	if got.code != 0 {
+		t.Fatalf("run = %+v", got)
+	}
+
+	// The sandbox the run created is still there and reports no deadline.
+	list := h.invoke("list")
+	if list.code != 0 {
+		t.Fatalf("list = %+v", list)
+	}
+	id := firstSandboxID(t, got.stderr)
+	inspect := h.invoke("inspect", id)
+	if inspect.code != 0 {
+		t.Fatalf("inspect = %+v", inspect)
+	}
+	// inspect prints one "field: value" line per field, not JSON.
+	if !strings.Contains(inspect.stdout, "timeout_seconds: 0\n") {
+		t.Errorf("inspect output does not report timeout_seconds 0: %q", inspect.stdout)
+	}
+	if !strings.Contains(inspect.stdout, "expires_at: null\n") {
+		t.Errorf("inspect output reports a deadline for an undeadlined sandbox: %q", inspect.stdout)
+	}
+}

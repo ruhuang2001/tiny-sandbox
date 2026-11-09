@@ -336,3 +336,43 @@ func readBody(r *http.Request) []byte {
 	data, _ := io.ReadAll(r.Body)
 	return data
 }
+
+// TestStreamAcceptsTheLargestCompleteEvent pins the scanner limit against the
+// worst case the server can send. A complete event carries the whole retained
+// output (1 MiB across stdout and stderr), and JSON turns every control byte
+// into six characters, so the data line can exceed 6 MiB. The earlier 2 MiB
+// cap made a command that printed control bytes fail to stream even though it
+// had completed successfully.
+func TestStreamAcceptsTheLargestCompleteEvent(t *testing.T) {
+	f := newFakeServer(t)
+
+	// Every byte is 0x01: the worst case for JSON escaping.
+	worst := strings.Repeat("\x01", 1<<20)
+	code := 0
+	reason := ReasonExited
+	payload, err := json.Marshal(Execution{
+		ID: "exe_1", SandboxID: "sbx_1", State: "completed",
+		ExitCode: &code, TerminationReason: &reason,
+		Stdout: worst[:512<<10], Stderr: worst[512<<10:],
+	})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "id: 1\nevent: complete\ndata: "+string(payload)+"\n\n")
+	})
+	if len(payload) < 6<<20 {
+		t.Fatalf("test payload is only %d bytes; it does not reach the limit it exists to exercise", len(payload))
+	}
+
+	c := f.client(t, 1)
+	ex, err := c.StreamExecution(context.Background(), "sbx_1", "exe_1", nil)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(ex.Stdout) != 512<<10 || len(ex.Stderr) != 512<<10 {
+		t.Fatalf("stdout=%d stderr=%d, want 512 KiB each", len(ex.Stdout), len(ex.Stderr))
+	}
+}

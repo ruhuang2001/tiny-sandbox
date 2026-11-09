@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -310,20 +311,38 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// Events and pings both write to w, so one mutex keeps them from
-	// interleaving mid-event. The ping runs separately: the main loop must
-	// block on the next event, not on the ping interval, or a terminal event
-	// that arrives just after a batch waits a full 15 seconds.
+	// interleaving mid-event. The lock covers the flush as well as the write:
+	// Flush and Write share net/http's buffered writer, so a flush on one
+	// goroutine while the other writes corrupts the frame. The ping runs
+	// separately because the main loop must block on the next event, not on
+	// the ping interval, or a terminal event that arrives just after a batch
+	// waits a full 15 seconds.
 	var writeMu sync.Mutex
+	// write sends one frame and flushes it, under the lock. Callers that send
+	// a whole batch build the frames first and call this once, so a replay
+	// of a long log costs one write and one flush instead of one per event.
 	write := func(data []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		_, err := w.Write(data)
-		return err
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
 	}
 
 	pingDone := make(chan struct{})
-	defer close(pingDone)
+	var pingWait sync.WaitGroup
+	pingWait.Add(1)
+	defer func() {
+		// Stop the ping before returning: net/http reuses the response writer
+		// after ServeHTTP returns, and a ping still inside Write would race
+		// with the next request on the same connection.
+		close(pingDone)
+		pingWait.Wait()
+	}()
 	go func() {
+		defer pingWait.Done()
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -336,7 +355,6 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 				if err := write([]byte(": ping\n\n")); err != nil {
 					return
 				}
-				flusher.Flush()
 			}
 		}
 	}()
@@ -346,17 +364,20 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		for _, ev := range events {
-			data, err := renderEvent(ev)
-			if err != nil {
-				return
-			}
-			if err := write(data); err != nil {
-				return
-			}
-		}
 		if len(events) > 0 {
-			flusher.Flush()
+			// One buffer, one write, one flush per batch: replaying a long
+			// log would otherwise cost a syscall and a packet per event.
+			var batch bytes.Buffer
+			for _, ev := range events {
+				data, err := renderEvent(ev)
+				if err != nil {
+					return
+				}
+				batch.Write(data)
+			}
+			if err := write(batch.Bytes()); err != nil {
+				return
+			}
 		}
 		if done {
 			return

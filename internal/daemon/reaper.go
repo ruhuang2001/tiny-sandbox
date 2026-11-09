@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+// backendCtx bounds one reaper-driven backend call. The reaper is one
+// goroutine visiting every sandbox, so a call that never returns would stop
+// timeout and eviction checks for all of them; a deadline turns that into a
+// skipped sandbox retried on the next beat.
+func backendCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, BackendCallTimeout)
+}
+
 // dueTimeout reports which timeout, if any, is due for sb at now.
 func (sb *sandbox) dueTimeout(now time.Time) (reason KillReason, ok bool) {
 	if sb.opts.timeoutSeconds > 0 && sb.deadlined(now) {
@@ -62,18 +70,137 @@ func (s *Sandboxes) reapOne(ctx context.Context, sb *sandbox, now time.Time) {
 		if sb.state != StateRunning {
 			return
 		}
-		if err := s.backend.Pause(ctx, sb.container); err != nil {
+		callCtx, cancel := backendCtx(ctx)
+		err := s.backend.Pause(callCtx, sb.container)
+		cancel()
+		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				s.killLocked(sb, KillEvicted)
+				return
 			}
-			// Any other failure is retried on the next beat.
+			// A failed pause may still have paused the container: the request
+			// can time out after Docker acted. Recording the transition only
+			// from the error would then leave the record running while the
+			// container is frozen, and every later beat would repeat a Pause
+			// that Docker answers with "already paused" forever. Ask the
+			// runtime what actually happened.
+			if liveness, livenessErr := s.liveness(ctx, sb.container); livenessErr == nil &&
+				liveness == LivenessPaused {
+				sb.state = StatePaused
+				sb.expiresAt = nil
+			}
+			// Otherwise the next beat retries.
 			return
 		}
 		sb.state = StatePaused
 		sb.expiresAt = nil
 	case ActionKill:
+		// terminateLocked bounds the removal itself and detaches it from the
+		// caller's context, so a reaper-driven kill during shutdown still
+		// completes; it also schedules a retry when the runtime does not
+		// answer in time.
 		s.terminateLocked(ctx, sb, reason)
 	}
+}
+
+// liveness reads one container's liveness with the reaper's per-call bound.
+func (s *Sandboxes) liveness(ctx context.Context, containerID string) (Liveness, error) {
+	callCtx, cancel := backendCtx(ctx)
+	defer cancel()
+	return s.backend.Liveness(callCtx, containerID)
+}
+
+// retryRemovals retries containers whose removal failed or timed out. A killed
+// record whose container is still running is invisible to everything else: the
+// eviction sweep skips killed sandboxes and a repeated delete returns the
+// stored record without retrying. Without this, a slow runtime would turn a
+// bounded timeout into a container that outlives the deadline it was killed
+// for, until the next process restart.
+//
+// The pass runs on its own goroutine with an overall budget, not inline in the
+// reaper tick. A hung runtime makes each Remove spend its whole timeout, and a
+// long queue would then delay timeout enforcement and eviction detection for
+// every healthy sandbox. A pass that overruns its budget simply stops and the
+// rest is retried on the next beat.
+func (s *Sandboxes) retryRemovals(ctx context.Context) {
+	if !s.tryStartRemovalPass() {
+		return
+	}
+	passCtx, cancel := context.WithTimeout(ctx, removalPassBudget)
+	go func() {
+		defer cancel()
+		defer s.finishRemovalPass()
+		s.runRemovalPass(passCtx)
+	}()
+}
+
+// runRemovalPass makes one bounded Remove call per queued container until the
+// pass budget runs out.
+func (s *Sandboxes) runRemovalPass(ctx context.Context) {
+	for _, id := range s.pendingRemovals() {
+		if ctx.Err() != nil {
+			return
+		}
+		err := s.removeBounded(ctx, id)
+		// ErrNotFound is success here: the container is gone either way.
+		if err == nil || errors.Is(err, ErrNotFound) {
+			s.forgetRemoval(id)
+		}
+	}
+}
+
+// pendingRemovals snapshots the ids waiting for a retry.
+func (s *Sandboxes) pendingRemovals() []string {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	ids := make([]string, 0, len(s.retryIDs))
+	for id := range s.retryIDs {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// removeBounded calls Remove with the smaller of the per-call bound and the
+// time the pass has left.
+func (s *Sandboxes) removeBounded(ctx context.Context, containerID string) error {
+	callCtx, cancel := context.WithTimeout(ctx, BackendCallTimeout)
+	defer cancel()
+	return s.backend.Remove(callCtx, containerID)
+}
+
+// forgetRemoval drops a container that is gone.
+func (s *Sandboxes) forgetRemoval(containerID string) {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	delete(s.retryIDs, containerID)
+}
+
+// tryStartRemovalPass claims the single removal-pass slot, so overlapping
+// ticks never run two passes at once.
+func (s *Sandboxes) tryStartRemovalPass() bool {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	if s.removalPassRunning {
+		return false
+	}
+	s.removalPassRunning = true
+	return true
+}
+
+func (s *Sandboxes) finishRemovalPass() {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	s.removalPassRunning = false
+}
+
+// scheduleRemoval remembers a container the runtime would not remove. Nothing
+// is dropped: a container that outlived a removal has to be retried or it runs
+// until the process restarts, and the set is bounded only by the number of
+// sandboxes this process has killed.
+func (s *Sandboxes) scheduleRemoval(containerID string) {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	s.retryIDs[containerID] = struct{}{}
 }
 
 // EvictSweep checks every live sandbox's container and evicts those whose
@@ -90,7 +217,9 @@ func (s *Sandboxes) EvictSweep(ctx context.Context) {
 			continue
 		}
 		if sb.state == StateRunning || sb.state == StatePaused {
-			liveness, err := s.backend.Liveness(ctx, sb.container)
+			callCtx, cancel := backendCtx(ctx)
+			liveness, err := s.backend.Liveness(callCtx, sb.container)
+			cancel()
 			switch {
 			case err != nil:
 				// Unreadable is not proof of death; the next sweep asks again.
@@ -117,6 +246,7 @@ func (s *Sandboxes) Run(ctx context.Context) {
 		case <-tick.C:
 			s.Reap(ctx)
 			s.EvictSweep(ctx)
+			s.retryRemovals(ctx)
 		}
 	}
 }

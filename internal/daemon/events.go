@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"sync"
+	"unicode/utf8"
 )
 
 // EventType is the name of an SSE event, as documented in api.md.
@@ -70,6 +71,12 @@ func (l *eventLog) notifyLocked() {
 // per-event limit is split, so no single event exceeds 32 KiB. Once a bound is
 // hit the chunk is discarded whole, keeping "stored output is exactly the data
 // delivered in events" true.
+//
+// A cut never splits a UTF-8 sequence. Output is delivered as JSON strings,
+// and each event is encoded on its own, so a half rune at the end of one
+// event would be replaced by U+FFFD on the wire and could never be rejoined
+// with its other half. The cut therefore backs up to the last rune boundary,
+// leaving at most three bytes for the next event.
 func (l *eventLog) appendOutput(kind EventType, chunk []byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -79,6 +86,14 @@ func (l *eventLog) appendOutput(kind EventType, chunk []byte) {
 	}
 	for len(chunk) > 0 {
 		n := min(len(chunk), MaxEventDataBytes)
+		if n < len(chunk) {
+			// Find the start of the rune the limit fell inside. A chunk of
+			// invalid bytes has no boundary; the limit then stands, and the
+			// JSON encoder turns those bytes into U+FFFD, as it must.
+			if cut := runeBoundary(chunk, n); cut > 0 {
+				n = cut
+			}
+		}
 		if l.outputEvents >= MaxOutputEvents || l.retainedBytes+n > MaxOutputBytes {
 			l.truncateLocked()
 			return
@@ -94,6 +109,40 @@ func (l *eventLog) appendOutput(kind EventType, chunk []byte) {
 		}
 		chunk = chunk[n:]
 	}
+}
+
+// runeBoundary returns the largest index i in (0, limit] at which chunk[i]
+// starts a rune, so a cut at i never splits a UTF-8 sequence. It returns 0
+// when the bytes before limit contain no rune start, which leaves the caller's
+// limit unchanged.
+func runeBoundary(chunk []byte, limit int) int {
+	if limit >= len(chunk) {
+		return limit
+	}
+	for i := limit; i > 0; i-- {
+		if utf8.RuneStart(chunk[i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+// incompleteRuneTail returns how many trailing bytes of chunk form an
+// incomplete UTF-8 sequence; 0 means the chunk ends on a rune boundary. The
+// caller holds those bytes back until the next read completes them, so a rune
+// is never split across two events.
+func incompleteRuneTail(chunk []byte) int {
+	for i := 1; i < utf8.UTFMax && i <= len(chunk); i++ {
+		start := len(chunk) - i
+		if !utf8.RuneStart(chunk[start]) {
+			continue
+		}
+		if utf8.FullRune(chunk[start:]) {
+			return 0
+		}
+		return i
+	}
+	return 0
 }
 
 // truncateLocked records that output was dropped. It is sent at most once.
@@ -158,8 +207,16 @@ func (l *eventLog) wait(ctx context.Context, after uint64) ([]Event, bool, error
 	}
 }
 
+// truncatedOutput reports whether output was dropped, without copying it.
+func (l *eventLog) truncatedOutput() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.truncated
+}
+
 // output returns the retained stdout and stderr and whether output was
-// truncated.
+// truncated. It copies, so callers that only need the flag use
+// truncatedOutput; a listing does.
 func (l *eventLog) output() (stdout, stderr []byte, truncated bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

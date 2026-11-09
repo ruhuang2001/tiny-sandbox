@@ -184,3 +184,64 @@ func TestConcurrentOperations(t *testing.T) {
 		<-done
 	}
 }
+
+// TestTimeoutPauseRecordsALateSuccess covers the pause path when the runtime
+// pauses the container but the request still fails (a timeout after Docker
+// acted). The record must follow the runtime: otherwise it stays running while
+// the container is frozen, every later reaper beat repeats a pause that Docker
+// answers with "already paused", and the sandbox is stuck.
+func TestTimeoutPauseRecordsALateSuccess(t *testing.T) {
+	ctx := context.Background()
+	clock := newFakeClock()
+	be := &flaky{Backend: membackend.New(), pauseThenErr: errBoom}
+	s := daemon.New(be, daemon.WithClock(clock))
+	sb, err := s.Create(ctx, daemon.CreateRequest{
+		TimeoutSeconds: ptr(10),
+		TimeoutAction:  ptr(daemon.ActionPause),
+	})
+	wantNoError(t, err)
+
+	clock.Advance(10 * time.Second)
+	s.Reap(ctx)
+
+	got, err := s.Get(sb.ID)
+	wantNoError(t, err)
+	if got.State != daemon.StatePaused {
+		t.Fatalf("state = %s, want paused: the container is paused, so the record must be too", got.State)
+	}
+	if got.ExpiresAt != nil {
+		t.Fatalf("expires_at = %v, want null after the pause", got.ExpiresAt)
+	}
+}
+
+// TestFailedRemovalIsRetried covers a removal that fails under the bounded
+// backend timeout. The record is already killed and nothing else revisits that
+// container, so without a retry it outlives the deadline it was killed for.
+func TestFailedRemovalIsRetried(t *testing.T) {
+	ctx := context.Background()
+	clock := newFakeClock()
+	be := &flaky{Backend: membackend.New(), removeFailures: 1}
+	s := daemon.New(be, daemon.WithClock(clock))
+	sb, err := s.Create(ctx, daemon.CreateRequest{})
+	wantNoError(t, err)
+	container := sb.ID
+	_ = container
+
+	if _, err := s.Delete(ctx, sb.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n := s.ScheduleRemovalCountForTest(); n != 1 {
+		t.Fatalf("%d removals scheduled after one failure, want 1", n)
+	}
+	if got := be.State(s.ContainerIDForTest(sb.ID)); got != daemon.LivenessRunning {
+		t.Fatalf("container = %v before the retry; the failure did not leave it running", got)
+	}
+
+	s.RetryRemovalsForTest(ctx)
+	if n := s.ScheduleRemovalCountForTest(); n != 0 {
+		t.Fatalf("%d removals still scheduled after a successful retry", n)
+	}
+	if got := be.State(s.ContainerIDForTest(sb.ID)); got != daemon.LivenessMissing {
+		t.Fatalf("container = %v after the retry, want missing", got)
+	}
+}
