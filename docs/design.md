@@ -69,7 +69,7 @@ internal/dockerapi/      minimal Engine API client: create, start, exec, inspect
 internal/dockerbackend/  Backend implementation over dockerapi; cgroup reads
 api/                     openapi.yaml plus contract.go with go:embed
 sandbox-go/              SDK: client, sandbox, exec, stream, retry, errors, files
-examples/agent-tool/     the SDK used as an agent tool function
+examples/agent-tool/     the SDK used as an agent tool function (built and tested in CI)
 ```
 
 ## Key decisions
@@ -161,7 +161,9 @@ One workflow, four jobs:
 | `build` | `go build ./...`, both commands, the example, `goreleaser check` |
 | `e2e` | Docker-backed suite with coverage instrumentation; uploads `artifacts/`; asserts no containers remain |
 
-Releases are built by GoReleaser from a tag: six platform archives plus a checksum file. Versioning follows semantic versioning at the repository level; CLI flags, environment variables, JSON fields, error types, timeout units, and SSE event semantics are all part of the compatibility surface. [versioning.md](versioning.md) holds the details.
+Releases are built by GoReleaser from a tag: six platform archives plus a checksum file. Versioning follows semantic versioning at the repository level; CLI flags, environment variables, JSON fields, error types, timeout units, and SSE event semantics are all part of the compatibility surface. [versioning.md](versioning.md) holds the details, and [competitors.md](competitors.md)
+records which parts of the E2B and Daytona client surfaces this design keeps
+compatible and which it deliberately changes.
 
 ## Known pitfalls
 

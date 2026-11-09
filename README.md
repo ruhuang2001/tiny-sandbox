@@ -29,6 +29,7 @@ docs/                    design and normative contracts
 - [docs/sdk.md](docs/sdk.md) — Go SDK contract
 - [docs/cli.md](docs/cli.md) — CLI contract
 - [docs/versioning.md](docs/versioning.md) — versioning and release checks
+- [docs/competitors.md](docs/competitors.md) — E2B and Daytona SDK comparison and the compatibility decisions that follow
 - [docs/future.md](docs/future.md) — deliberate non-goals and what comes next
 
 ## Quick start
@@ -60,6 +61,18 @@ Cancelling an execution sends SIGTERM to its process group, then SIGKILL two
 seconds later, and answers only once the processes are gone. A streaming
 connection that drops reconnects with `Last-Event-ID` and never duplicates or
 loses output.
+
+## Examples
+
+- [`examples/agent-tool/`](examples/agent-tool/) — the SDK wrapped as an agent
+  tool: a JSON schema the model sees, and a result object that reports `oom`,
+  `timeout`, `canceled`, `evicted`, and `nonzero_exit` as distinct outcomes with
+  output attached. Built and tested in CI; run it with no server at all:
+
+  ```sh
+  go run ./examples/agent-tool/cmd/demo -- -definition
+  go run ./examples/agent-tool/cmd/demo -- -code 'print(2 ** 10)'
+  ```
 
 ## SDK
 

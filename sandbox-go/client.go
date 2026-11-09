@@ -1,6 +1,11 @@
 // Package sandbox is the Go SDK for tiny-sandbox. It speaks the HTTP contract
-// in docs/api.md. Only configuration exists in this scaffold; sandbox and
-// execution methods follow the SDK design in docs/sdk.md.
+// in docs/api.md and depends on the standard library only.
+//
+// The Client covers the sandbox lifecycle, executions with streamed output and
+// cancellation, and files. Errors are a single *Error type that matches the
+// sentinels in this package with errors.Is, so a caller can branch on an
+// outcome (ErrOOM, ErrTimeout, ErrCanceled, ErrEvicted, ErrNonZeroExit)
+// without parsing messages.
 package sandbox
 
 import (
