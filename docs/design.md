@@ -117,6 +117,7 @@ a container's network after creation.
 
 - An execution is a resource under a sandbox: `/v1/sandboxes/{id}/executions/{execution_id}`. Its ID is what makes replay and cancellation possible.
 - A sandbox runs one execution at a time; an overlapping start returns `409 busy`. This keeps container-wide OOM evidence attributable to a single execution.
+- An execution may carry its own `timeout_seconds`. It ends the command and keeps the sandbox, which is what an agent calling a tool needs: a runaway command should cost one result, not the working directory. The deadline is fixed at start and counts wall time, so a busy command cannot extend it, and a lifetime deadline that arrives first still kills the sandbox. The escalation reuses the cancel path (SIGTERM, grace, SIGKILL) with a different reason, and only the container-removal fallback ends the sandbox. The reaper claims a due deadline once per execution, so a slow escalation never starts twice.
 - Output is recorded as an event log with monotonically increasing IDs: `stdout`, `stderr`, and one terminal `complete` event. The log is bounded; when the bound is hit a `truncated` event tells the client the stream is incomplete.
 - SSE was chosen over WebSocket: output flows one way, SSE works through ordinary HTTP proxies, is readable with `curl`, and has event IDs built in. The cost is no interactive stdin, and control operations need separate requests.
 - `Last-Event-ID` replays only later events; the SDK also de-duplicates by ID. Closing a stream never cancels the execution.

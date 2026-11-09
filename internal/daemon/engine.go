@@ -41,6 +41,14 @@ type execution struct {
 	// exit status follows.
 	intent *intentRecord
 
+	// deadline is when this execution's own timeout fires, or nil when it has
+	// none. It is fixed at start: the point of an execution timeout is that a
+	// command cannot extend it by staying busy.
+	deadline *time.Time
+	// timedOut records that the reaper already started this execution's
+	// timeout escalation, so a later beat does not start a second one.
+	timedOut bool
+
 	proc        Process
 	oomBaseline int64
 	done        chan struct{}
@@ -161,6 +169,9 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 	if req.IdempotencyKey != "" && len(req.IdempotencyKey) > MaxIdempotencyKey {
 		return Execution{}, false, errorf(CodeInvalidRequest, "idempotency_key exceeds %d characters", MaxIdempotencyKey)
 	}
+	if req.TimeoutSeconds != nil && *req.TimeoutSeconds < 0 {
+		return Execution{}, false, errorf(CodeInvalidRequest, "timeout_seconds must not be negative")
+	}
 
 	sb, err := s.lookup(sandboxID)
 	if err != nil {
@@ -239,6 +250,10 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 		proc:        proc,
 		oomBaseline: baseline,
 		done:        make(chan struct{}),
+	}
+	if req.TimeoutSeconds != nil && *req.TimeoutSeconds > 0 {
+		deadline := s.now().Add(time.Duration(*req.TimeoutSeconds) * time.Second)
+		ex.deadline = &deadline
 	}
 	sb.executions = append(sb.executions, ex)
 	sb.running = ex
@@ -423,6 +438,54 @@ func (s *Sandboxes) CancelExecution(ctx context.Context, sandboxID, executionID 
 	// execution. Give it a moment, then report what is known.
 	s.waitDone(cleanup, ex.done, s.cancelGrace)
 	return ex.snapshot(), nil
+}
+
+// timeoutExecution ends one execution whose own deadline is due. It runs on
+// its own goroutine because the reaper is a single goroutine and the SIGTERM
+// grace alone outlasts a beat.
+//
+// The escalation is the cancel escalation with a different reason: SIGTERM,
+// then SIGKILL after the grace period, and container removal only when the
+// process tree cannot be confirmed gone. Unlike a cancel it normally leaves
+// the sandbox running, because the command timed out, not the sandbox. The
+// container-removal fallback is the exception: it ends the sandbox with
+// kill_reason timeout, the same reason a lifetime kill records.
+func (s *Sandboxes) timeoutExecution(ctx context.Context, sb *sandbox, ex *execution) {
+	if s.waitDone(ctx, ex.done, 0) {
+		return
+	}
+
+	// A paused container delivers no signals. A timeout that reaches the
+	// execution while the sandbox is paused resumes it, so the signal can
+	// land; the deadline was already due, so this does not extend anything.
+	sb.mu.Lock()
+	if sb.state == StatePaused {
+		if err := s.backend.Unpause(ctx, sb.container); err != nil {
+			// The process outlives its deadline by one beat and timedOut is
+			// already set, so the deadline is not reclaimed. Removing the
+			// container is the only guarantee left.
+			s.terminateLocked(ctx, sb, KillTimeout)
+			sb.mu.Unlock()
+			return
+		}
+		sb.state = StateRunning
+		sb.armLifetimeLocked(s.now())
+	}
+	sb.mu.Unlock()
+
+	cleanup := context.WithoutCancel(ctx)
+	_ = ex.proc.Signal(SignalTerm)
+	if s.waitDone(cleanup, ex.done, s.cancelGrace) {
+		return
+	}
+	_ = ex.proc.Signal(SignalKill)
+	if s.waitDone(cleanup, ex.done, s.cancelDeadline-s.cancelGrace) {
+		return
+	}
+
+	sb.mu.Lock()
+	s.terminateLocked(cleanup, sb, KillTimeout)
+	sb.mu.Unlock()
 }
 
 // waitDone waits for done or ctx or the timeout, reporting whether done

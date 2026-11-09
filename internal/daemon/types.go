@@ -160,9 +160,15 @@ type CreateRequest struct {
 }
 
 // ExecuteRequest is the body of POST /v1/sandboxes/{id}/executions.
+//
+// TimeoutSeconds bounds one execution. A nil pointer or zero means the
+// execution has no deadline of its own and runs until it finishes, is
+// canceled, or the sandbox it runs in reaches its lifetime deadline. The
+// sandbox lifetime still applies: whichever deadline comes first wins.
 type ExecuteRequest struct {
 	Command        []string `json:"command"`
 	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
 }
 
 // sandboxOptions is a CreateRequest resolved against the defaults.

@@ -207,6 +207,19 @@ check "timeout exit" "timeout exits 1" "$code" "1"
 contains "timeout reason" "timeout status line" "$OUT/timeout.err" "(timeout)"
 contains "timeout hint" "timeout hint" "$OUT/timeout.err" "hint: increase --timeout"
 
+# An execution deadline ends the command but keeps the sandbox, so the same
+# number of seconds has to be told apart from a lifetime deadline by the state
+# of the sandbox afterwards, not by the exit status.
+"$BIN/sandboxctl" run --timeout 0 --exec-timeout 3 -- sleep 30 >"$OUT/exec-timeout.out" 2>"$OUT/exec-timeout.err"
+code=$?
+check "exec-timeout exit" "an execution timeout exits 1" "$code" "1"
+contains "exec-timeout reason" "execution timeout status line" "$OUT/exec-timeout.err" "(timeout)"
+exec_timeout_sandbox=$(sed -n 's/^sandbox: \(sbx_[a-z0-9]*\).*/\1/p' "$OUT/exec-timeout.err" | head -1)
+"$BIN/sandboxctl" inspect "$exec_timeout_sandbox" >"$OUT/exec-timeout-inspect.txt" 2>&1
+check "exec-timeout survives" "the sandbox is still running after the command timed out" "$?" "0"
+contains "exec-timeout state" "the sandbox was not killed" "$OUT/exec-timeout-inspect.txt" "state: running"
+"$BIN/sandboxctl" kill "$exec_timeout_sandbox" >/dev/null 2>&1
+
 # ---------------------------------------------------------------- hardening
 
 note "hardening"

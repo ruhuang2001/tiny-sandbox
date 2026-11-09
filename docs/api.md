@@ -75,7 +75,7 @@ container liveness, and finally the exit code:
 | Reason | Condition |
 |---|---|
 | `canceled` | the server terminated it because of a cancel request or sandbox deletion |
-| `timeout` | the server terminated it because the sandbox lifetime expired with action `kill` |
+| `timeout` | the server terminated it because a deadline expired: the sandbox lifetime with action `kill`, or the execution's own `timeout_seconds` |
 | `oom` | the kernel OOM killer acted in the sandbox's cgroup during the execution |
 | `evicted` | the container stopped or disappeared without the server asking for it |
 | `exited` | the process exited on its own, with any exit code, including 137 |
@@ -111,6 +111,30 @@ Pausing freezes every process in the sandbox, including a running execution, whi
 - With `timeout_action: kill`, the deadline is `created_at + timeout_seconds` and keeps counting while paused. At the deadline the sandbox is killed with `kill_reason: timeout`, and a running execution ends with reason `timeout`.
 - With `timeout_action: pause`, the deadline only counts while `running`. At the deadline the sandbox is paused. Every transition to `running` (explicit or automatic resume) sets a fresh deadline `now + timeout_seconds`. Without this, an automatic resume would immediately expire again.
 - `expires_at` always shows the current deadline.
+
+### Execution timeout
+
+An execution may carry its own `timeout_seconds` on the start request. It is
+independent of the sandbox lifetime deadline: whichever comes first ends the
+command.
+
+- Omitted or `0` means the execution has no deadline of its own; it runs until
+  it finishes, is canceled, or the sandbox lifetime ends it.
+- The deadline is fixed when the execution starts. It counts wall time,
+  including time the sandbox spends paused, so a command cannot extend it by
+  staying busy.
+- At the deadline the server terminates the command's process group: SIGTERM,
+  then SIGKILL after the grace period. The execution ends with
+  `termination_reason: timeout` and the sandbox keeps running with its
+  filesystem intact.
+- If the process tree cannot be confirmed gone, the server removes the
+  container as it does for a cancel, and the sandbox ends `killed` with
+  `kill_reason: timeout`.
+- A pause that begins before the deadline does not stop it. The server applies
+  the timeout on the first reaper beat after the sandbox is running again.
+
+The reaper observes deadlines at most one second apart, so the recorded end can
+be up to that much later than the deadline.
 
 ### Idle timeout
 
@@ -164,6 +188,7 @@ No body. `200` Sandbox. Idempotent per the transition table.
 
 - `command` is required and non-empty.
 - `idempotency_key` is optional, at most 128 characters, scoped to the sandbox.
+- `timeout_seconds` is optional and bounds this execution. Omitted or `0` means no deadline of its own. The sandbox lifetime deadline still applies, and whichever comes first wins. See [execution timeout](#execution-timeout).
 - `201` with the new Execution (`state: running`).
 - State validation precedes idempotency lookup: a killed or pending sandbox rejects the start, including a replay; a paused sandbox resumes first.
 - Same key and same command as an existing execution: `200` with that execution, in whatever state it is now. No new process starts.

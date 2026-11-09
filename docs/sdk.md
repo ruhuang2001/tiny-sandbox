@@ -48,6 +48,12 @@ WriteFile(ctx, sandboxID, path string, data []byte) error
 
 Optional request fields use pointers (`*int`) so that "unset" and `0` are distinct.
 
+`ExecuteRequest.TimeoutSeconds` bounds one execution. `Exec` and `ExecStream`
+take no timeout argument, so a caller that needs one calls `StartExecution`
+directly and then `StreamExecution`. A timed-out execution ends with
+`termination_reason: timeout`, which `errors.Is(err, ErrTimeout)` matches, and
+the sandbox is left running.
+
 `Exec` and `ExecStream` are `StartExecution` followed by `StreamExecution`. When execution completes, they return its Execution together with an error: `nil` only when `termination_reason` is `exited` and `exit_code` is 0.
 
 ## Errors

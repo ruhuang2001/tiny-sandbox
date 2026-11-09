@@ -27,6 +27,7 @@ type runFlags struct {
 	timeoutAction string
 	idleTimeout   int
 	idleAction    string
+	execTimeout   int
 	remove        bool
 
 	given map[string]bool
@@ -48,6 +49,7 @@ func (in *invocation) runCommand(args []string) int {
 	fs.StringVar(&rf.timeoutAction, "timeout-action", "", "kill or pause")
 	fs.IntVar(&rf.idleTimeout, "idle-timeout", 0, "idle timeout in seconds (0 disables)")
 	fs.StringVar(&rf.idleAction, "idle-action", "", "kill or pause")
+	fs.IntVar(&rf.execTimeout, "exec-timeout", 0, "timeout for this command in seconds (0 disables)")
 	fs.BoolVar(&rf.remove, "rm", false, "kill the sandbox after the command")
 	if err := fs.Parse(flagsPart); err != nil {
 		return 2
@@ -67,6 +69,10 @@ func (in *invocation) runCommand(args []string) int {
 	}
 	if rf.set("idle-timeout") && rf.idleTimeout < 0 {
 		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: --idle-timeout must not be negative; use 0 to disable")
+		return 2
+	}
+	if rf.set("exec-timeout") && rf.execTimeout < 0 {
+		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: --exec-timeout must not be negative; use 0 to disable")
 		return 2
 	}
 
@@ -116,7 +122,11 @@ func (in *invocation) runCommand(args []string) int {
 		_, _ = fmt.Fprintf(in.stderr, "sandbox: %s\n", sandboxID)
 	}
 
-	started, err := client.StartExecution(ctx, sandboxID, sandbox.ExecuteRequest{Command: command})
+	startReq := sandbox.ExecuteRequest{Command: command}
+	if rf.set("exec-timeout") {
+		startReq.TimeoutSeconds = &rf.execTimeout
+	}
+	started, err := client.StartExecution(ctx, sandboxID, startReq)
 	if err != nil {
 		return in.startFailed(client, sandboxID, created, rf.remove, err)
 	}

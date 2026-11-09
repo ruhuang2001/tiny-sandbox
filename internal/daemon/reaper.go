@@ -14,7 +14,7 @@ func backendCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, BackendCallTimeout)
 }
 
-// dueTimeout reports which timeout, if any, is due for sb at now.
+// dueTimeout reports which sandbox-level timeout, if any, is due for sb at now.
 func (sb *sandbox) dueTimeout(now time.Time) (reason KillReason, ok bool) {
 	if sb.opts.timeoutSeconds > 0 && sb.deadlined(now) {
 		return KillTimeout, true
@@ -23,6 +23,29 @@ func (sb *sandbox) dueTimeout(now time.Time) (reason KillReason, ok bool) {
 		return KillIdleTimeout, true
 	}
 	return "", false
+}
+
+// dueExecutionTimeout reports whether the sandbox's running execution has its
+// own deadline due at now, and claims it so no later beat starts a second
+// escalation. Callers hold sb.mu.
+//
+// The deadline is absolute from start, so time spent paused counts. The
+// reaper only claims it while the sandbox is running: a paused container
+// delivers nothing to signal, and the claim would be wasted. A pause that ends
+// after the deadline therefore times the execution out on the first beat after
+// the resume, which is the same rule the lifetime timeout uses for a kill.
+func (sb *sandbox) dueExecutionTimeout(now time.Time) (*execution, bool) {
+	ex := sb.running
+	if ex == nil {
+		return nil, false
+	}
+	ex.mu.Lock()
+	defer ex.mu.Unlock()
+	if ex.state != ExecRunning || ex.deadline == nil || ex.timedOut || now.Before(*ex.deadline) {
+		return nil, false
+	}
+	ex.timedOut = true
+	return ex, true
 }
 
 // Reap applies every due timeout once. It is the only thing that turns a
@@ -55,6 +78,19 @@ func (s *Sandboxes) reapOne(ctx context.Context, sb *sandbox, now time.Time) {
 
 	reason, due := sb.dueTimeout(now)
 	if !due {
+		// An execution deadline ends the command, not the sandbox, so it is
+		// checked only after the sandbox has survived its own deadlines. The
+		// escalation runs on its own goroutine: the reaper is one goroutine
+		// visiting every sandbox, and the SIGTERM grace alone is longer than
+		// a beat.
+		if sb.state == StateRunning {
+			if ex, ok := sb.dueExecutionTimeout(now); ok {
+				// Record the intent before acting, as cancel does: it
+				// explains whatever exit code the signal produces.
+				ex.setIntent(ReasonTimeout)
+				go s.timeoutExecution(context.WithoutCancel(ctx), sb, ex)
+			}
+		}
 		return
 	}
 
