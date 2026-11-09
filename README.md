@@ -14,22 +14,20 @@ client, and HTTP API.
 
 ## Install
 
-Download the archive for your operating system and architecture from
-[v0.0.1](https://github.com/ruhuang2001/tiny-sandbox/releases/tag/v0.0.1).
-Verify its SHA256 against the release's `checksums.txt`, extract it, and put
-`sandboxd` and `sandboxctl` on your `PATH`. Releases include Linux, macOS, and
-Windows binaries for amd64 and arm64. A reachable Docker daemon is still
-required; `sandboxctl doctor` also needs the Docker CLI for local checks.
+On macOS or Linux (including WSL2), paste this command to download the latest
+release into `$HOME/tiny-sandbox-quickstart`. Docker is required to run it.
 
-`sandboxd` connects through a Docker Unix socket, `/var/run/docker.sock` by
-default. Override it with `-docker /path/to/docker.sock` or
-`DOCKER_HOST=unix:///path/to/docker.sock`; TCP endpoints and Windows named
-pipes are not supported. The CLI can connect to a server on another machine
-using `SANDBOX_DOMAIN`.
-
-To build from source instead, follow the quick start below.
+```sh
+curl -fsSL https://raw.githubusercontent.com/ruhuang2001/tiny-sandbox/main/scripts/install.sh | sh
+```
 
 ## Quick start
+
+Follow the [Quick start tutorial](docs/quickstart.md) to download the latest
+release, run Python locally in Docker, and try streaming output and timeouts.
+No Go installation or model API key is needed.
+
+## Build from source
 
 Requires Go 1.27+, Make, and a reachable Docker daemon.
 
@@ -37,21 +35,10 @@ Requires Go 1.27+, Make, and a reachable Docker daemon.
 git clone https://github.com/ruhuang2001/tiny-sandbox.git
 cd tiny-sandbox
 make build
-./bin/sandboxd
 ```
 
-The server listens on `127.0.0.1:8080`. In another terminal, from the same
-directory:
-
-```sh
-./bin/sandboxctl doctor
-./bin/sandboxctl run --rm -- sh -c 'echo hello'
-./bin/sandboxctl run --rm -- code 'print(2 ** 10)'
-```
-
-`--rm` requests cleanup of the newly created sandbox after execution. Command
-stdout goes to stdout; command stderr and execution status go to stderr. Set `SANDBOX_DOMAIN` to connect to another
-server and `SANDBOX_API_KEY` when authentication is enabled.
+Start the service with `./bin/sandboxd`, then use `./bin/sandboxctl` from a
+second terminal. See the [CLI reference](docs/cli.md) for commands.
 
 ## Integrate
 
@@ -62,7 +49,7 @@ and [OpenAPI specification](api/openapi.yaml).
 Add the Go SDK to your module with:
 
 ```sh
-go get github.com/ruhuang2001/tiny-sandbox/sandbox-go@v0.0.1
+go get github.com/ruhuang2001/tiny-sandbox/sandbox-go@latest
 ```
 
 The [agent tool example](examples/agent-tool/README.md) shows how to expose
@@ -77,6 +64,7 @@ limitations](docs/design.md) and [future directions](docs/future.md).
 
 ## Documentation
 
+- [Quick start](docs/quickstart.md)
 - [Architecture and execution flows](docs/design.md)
 - [CLI reference](docs/cli.md)
 - [Go SDK reference](docs/sdk.md)
