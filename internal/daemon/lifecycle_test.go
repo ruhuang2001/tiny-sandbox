@@ -289,6 +289,17 @@ func TestCreateDefaults(t *testing.T) {
 		if sb.MemoryMB != daemon.DefaultMemoryMB {
 			t.Errorf("memory_mb = %d, want %d", sb.MemoryMB, daemon.DefaultMemoryMB)
 		}
+		if sb.PidsLimit != daemon.DefaultPidsLimit {
+			t.Errorf("pids_limit = %d, want %d", sb.PidsLimit, daemon.DefaultPidsLimit)
+		}
+		if sb.NanoCPUs != 0 {
+			t.Errorf("nano_cpus = %d, want 0 (no limit)", sb.NanoCPUs)
+		}
+		// Networking defaults to bridge: a sandbox that cannot reach the
+		// network cannot install a package, and that is the common case.
+		if sb.Network != daemon.NetworkBridge {
+			t.Errorf("network = %s, want %s", sb.Network, daemon.NetworkBridge)
+		}
 		if sb.TimeoutSeconds != daemon.DefaultTimeoutSeconds {
 			t.Errorf("timeout_seconds = %d, want %d", sb.TimeoutSeconds, daemon.DefaultTimeoutSeconds)
 		}
@@ -322,6 +333,9 @@ func TestCreateDefaults(t *testing.T) {
 		h := newHarness(t)
 		for name, req := range map[string]daemon.CreateRequest{
 			"memory too small": {MemoryMB: ptr(15)},
+			"pids too small":   {PidsLimit: ptr(daemon.MinPidsLimit - 1)},
+			"negative cpus":    {NanoCPUs: ptr(int64(-1))},
+			"unknown network":  {Network: ptr(daemon.NetworkMode("host"))},
 			"negative timeout": {TimeoutSeconds: ptr(-1)},
 			"bad action":       {TimeoutAction: ptr(daemon.Action("explode"))},
 			"bad idle action":  {IdleTimeoutAction: ptr(daemon.Action("explode"))},

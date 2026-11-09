@@ -45,6 +45,9 @@ Clients may honor a `Retry-After` header (seconds) on 429 and 503.
 | `state` | string | `pending`, `running`, `paused`, `killed` |
 | `image` | string | default `alpine:3.20` |
 | `memory_mb` | int | memory limit, default 512, minimum 16 |
+| `pids_limit` | int | task limit, default 1024, minimum 64 |
+| `nano_cpus` | int | CPU limit in units of 1e-9 CPUs, default `0` (unlimited) |
+| `network` | string | `bridge` (default, outbound access) or `none` |
 | `timeout_seconds` | int | lifetime timeout, default 300, `0` disables |
 | `timeout_action` | string | `kill` (default) or `pause` |
 | `idle_timeout_seconds` | int | default `0` (disabled) |
@@ -159,8 +162,18 @@ Timeout transitions are applied by a periodic reaper configured to tick at most 
 Request (all fields optional):
 
 ```json
-{"image": "python:3.12-alpine", "memory_mb": 256, "timeout_seconds": 600, "timeout_action": "pause", "idle_timeout_seconds": 60, "idle_timeout_action": "pause"}
+{"image": "python:3.12-alpine", "memory_mb": 256, "pids_limit": 512, "nano_cpus": 1000000000, "network": "none", "timeout_seconds": 600, "timeout_action": "pause", "idle_timeout_seconds": 60, "idle_timeout_action": "pause"}
 ```
+
+- `pids_limit` defaults to 1024 and must be at least 64. It bounds tasks, not
+  processes: threads count. It is what stops a fork bomb at the container
+  boundary instead of at the host's PID table.
+- `nano_cpus` is a CPU limit in units of 1e-9 CPUs; `0`, the default, means no
+  limit. `1000000000` is one CPU.
+- `network` is `bridge` (default) or `none`. `bridge` gives the sandbox its own
+  network namespace with outbound access, so package installs and HTTP calls
+  work. `none` removes networking entirely. Host networking is not offered: it
+  would expose every host socket to code the caller does not control.
 
 `201` with the Sandbox. Not idempotent; clients must not retry it automatically.
 

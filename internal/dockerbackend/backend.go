@@ -49,14 +49,12 @@ var initCommand = []string{"sleep", "infinity"}
 // because a caller who runs untrusted code cannot be trusted to pick limits
 // that protect the host. Fields the contract does not expose stay here until
 // there is a reason and an e2e test for each knob.
-const (
-	// DefaultPidsLimit bounds processes and threads per sandbox. The value is
-	// counted by the pids cgroup, which counts tasks, not processes: a JVM or
-	// a Go build needs hundreds of threads. Memory limits do not constrain
-	// process count, so without this a fork bomb runs until the host's PID
-	// table is empty and every other sandbox (and the daemon) stalls.
-	DefaultPidsLimit = 1024
-)
+// DefaultPidsLimit bounds processes and threads per sandbox when the spec does
+// not set one. The value is counted by the pids cgroup, which counts tasks, not
+// processes: a JVM or a Go build needs hundreds of threads. Memory limits do
+// not constrain process count, so without this a fork bomb runs until the
+// host's PID table is empty and every other sandbox (and the daemon) stalls.
+const DefaultPidsLimit = 1024
 
 // sandboxCapDrop removes the capabilities no sandbox needs: NET_RAW stops raw
 // packet crafting and ICMP-level spoofing, MKNOD stops creating device nodes
@@ -101,7 +99,11 @@ func Dial(ctx context.Context, socketPath string) (*Backend, error) {
 // container is running, as the Backend contract requires.
 func (b *Backend) Create(ctx context.Context, spec daemon.ContainerSpec) (string, error) {
 	limit := int64(spec.MemoryMB) << 20
-	pids := int64(DefaultPidsLimit)
+	pidsLimit := spec.PidsLimit
+	if pidsLimit <= 0 {
+		pidsLimit = DefaultPidsLimit
+	}
+	pids := int64(pidsLimit)
 	initProcess := true
 	cfg := dockerapi.ContainerConfig{
 		Image:  spec.Image,
@@ -110,9 +112,11 @@ func (b *Backend) Create(ctx context.Context, spec daemon.ContainerSpec) (string
 		HostConfig: dockerapi.HostConfig{
 			Memory:      limit,
 			MemorySwap:  limit, // no swap: the limit the user asked for is the limit
+			NanoCpus:    spec.NanoCPUs,
 			PidsLimit:   &pids,
 			CapDrop:     sandboxCapDrop,
 			SecurityOpt: sandboxSecurityOpt,
+			NetworkMode: networkMode(spec.Network),
 			Tmpfs:       map[string]string{PidDir: "rw,size=1m,mode=1777"},
 			Init:        &initProcess,
 		},
@@ -408,6 +412,18 @@ func notFound(err error, format string, args ...any) error {
 		return fmt.Errorf("dockerbackend: %s: %w", fmt.Sprintf(format, args...), daemon.ErrNotFound)
 	}
 	return fmt.Errorf("dockerbackend: %s: %w", fmt.Sprintf(format, args...), err)
+}
+
+// networkMode maps the daemon's network mode to Docker's. An empty or unknown
+// value falls back to bridge, which is the compatibility default: a request
+// that does not mention networking must keep working the way it always has.
+func networkMode(mode daemon.NetworkMode) string {
+	switch mode {
+	case daemon.NetworkNone:
+		return string(daemon.NetworkNone)
+	default:
+		return string(daemon.NetworkBridge)
+	}
 }
 
 // parsePid validates the PID file contents: decimal digits only, so a changed

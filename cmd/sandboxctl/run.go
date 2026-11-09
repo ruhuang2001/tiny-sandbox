@@ -23,6 +23,9 @@ type runFlags struct {
 	sandboxID     string
 	image         string
 	memoryMB      int
+	pidsLimit     int
+	nanoCPUs      int64
+	network       string
 	timeout       int
 	timeoutAction string
 	idleTimeout   int
@@ -45,6 +48,9 @@ func (in *invocation) runCommand(args []string) int {
 	fs.StringVar(&rf.sandboxID, "sandbox", "", "use an existing sandbox")
 	fs.StringVar(&rf.image, "image", "", "image for a new sandbox")
 	fs.IntVar(&rf.memoryMB, "memory", 0, "memory limit in MB")
+	fs.IntVar(&rf.pidsLimit, "pids-limit", 0, "task limit in the sandbox")
+	fs.Int64Var(&rf.nanoCPUs, "nano-cpus", 0, "CPU limit in units of 1e-9 CPUs (0 is unlimited)")
+	fs.StringVar(&rf.network, "network", "", "bridge or none")
 	fs.IntVar(&rf.timeout, "timeout", 0, "lifetime timeout in seconds (0 disables)")
 	fs.StringVar(&rf.timeoutAction, "timeout-action", "", "kill or pause")
 	fs.IntVar(&rf.idleTimeout, "idle-timeout", 0, "idle timeout in seconds (0 disables)")
@@ -73,6 +79,19 @@ func (in *invocation) runCommand(args []string) int {
 	}
 	if rf.set("exec-timeout") && rf.execTimeout < 0 {
 		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: --exec-timeout must not be negative; use 0 to disable")
+		return 2
+	}
+	if rf.set("pids-limit") && rf.pidsLimit <= 0 {
+		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: --pids-limit must be positive")
+		return 2
+	}
+	if rf.set("nano-cpus") && rf.nanoCPUs < 0 {
+		_, _ = fmt.Fprintln(in.stderr, "sandboxctl: --nano-cpus must not be negative; use 0 for no limit")
+		return 2
+	}
+	if rf.network != "" && rf.network != sandbox.NetworkBridge && rf.network != sandbox.NetworkNone {
+		_, _ = fmt.Fprintf(in.stderr, "sandboxctl: --network must be %q or %q\n",
+			sandbox.NetworkBridge, sandbox.NetworkNone)
 		return 2
 	}
 
@@ -215,6 +234,15 @@ func (rf *runFlags) createRequest() sandbox.CreateSandboxRequest {
 	if rf.set("memory") {
 		req.MemoryMB = &rf.memoryMB
 	}
+	if rf.set("pids-limit") {
+		req.PidsLimit = &rf.pidsLimit
+	}
+	if rf.set("nano-cpus") {
+		req.NanoCPUs = &rf.nanoCPUs
+	}
+	if rf.network != "" {
+		req.Network = &rf.network
+	}
 	if rf.set("timeout") {
 		req.TimeoutSeconds = &rf.timeout
 	}
@@ -241,6 +269,15 @@ func checkNoCreationFlags(rf *runFlags) error {
 	}
 	if rf.set("memory") {
 		used = append(used, "--memory")
+	}
+	if rf.set("pids-limit") {
+		used = append(used, "--pids-limit")
+	}
+	if rf.set("nano-cpus") {
+		used = append(used, "--nano-cpus")
+	}
+	if rf.network != "" {
+		used = append(used, "--network")
 	}
 	if rf.set("timeout") {
 		used = append(used, "--timeout")

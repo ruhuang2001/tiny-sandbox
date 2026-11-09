@@ -632,6 +632,27 @@ components:
           type: integer
           minimum: 16
           default: 512
+        pids_limit:
+          type: integer
+          minimum: 64
+          default: 1024
+          description: >-
+            Bounds tasks, not processes; threads count. Stops a fork bomb at
+            the container boundary instead of at the host's PID table.
+        nano_cpus:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            CPU limit in units of 1e-9 CPUs; 1000000000 is one CPU. 0 means no
+            limit.
+        network:
+          type: string
+          enum: [bridge, none]
+          default: bridge
+          description: >-
+            bridge gives the sandbox outbound network access; none removes
+            networking entirely. Host networking is not offered.
         timeout_seconds:
           type: integer
           minimum: 0
@@ -657,6 +678,9 @@ components:
         - state
         - image
         - memory_mb
+        - pids_limit
+        - nano_cpus
+        - network
         - timeout_seconds
         - timeout_action
         - idle_timeout_seconds
@@ -676,6 +700,15 @@ components:
         memory_mb:
           type: integer
           minimum: 16
+        pids_limit:
+          type: integer
+          minimum: 64
+        nano_cpus:
+          type: integer
+          minimum: 0
+        network:
+          type: string
+          enum: [bridge, none]
         timeout_seconds:
           type: integer
           minimum: 0

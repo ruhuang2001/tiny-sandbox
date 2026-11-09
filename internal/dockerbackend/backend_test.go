@@ -70,11 +70,66 @@ func TestCreateSendsLimitsAndLabels(t *testing.T) {
 	if cfg.HostConfig.Init == nil || !*cfg.HostConfig.Init {
 		t.Errorf("init = %v, want an init process as PID 1 so orphans are reaped", cfg.HostConfig.Init)
 	}
+	// An unset network means bridge: the default must not silently isolate a
+	// sandbox whose request never mentioned networking.
+	if cfg.HostConfig.NetworkMode != string(daemon.NetworkBridge) {
+		t.Errorf("network_mode = %q, want %q", cfg.HostConfig.NetworkMode, daemon.NetworkBridge)
+	}
 	if cfg.Labels[daemon.OwnerLabelKey] != "127.0.0.1:8080" {
 		t.Errorf("labels = %v", cfg.Labels)
 	}
 	if f.createNames[0] != "tiny-sandbox-sbx_1" {
 		t.Errorf("name = %q", f.createNames[0])
+	}
+}
+
+// TestCreateAppliesSpecLimits pins the request-driven values, which the
+// defaults test cannot see: a limit the caller asked for must reach Docker,
+// and an explicit network mode must override the bridge default.
+func TestCreateAppliesSpecLimits(t *testing.T) {
+	f := newFakeDaemon(t)
+	b := f.backend(t)
+
+	if _, err := b.Create(context.Background(), daemon.ContainerSpec{
+		Image:     "alpine:3.20",
+		MemoryMB:  64,
+		PidsLimit: 256,
+		NanoCPUs:  1_500_000_000,
+		Network:   daemon.NetworkNone,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	host := f.creates[0].HostConfig
+	if host.PidsLimit == nil || *host.PidsLimit != 256 {
+		t.Errorf("pids_limit = %v, want 256", host.PidsLimit)
+	}
+	if host.NanoCpus != 1_500_000_000 {
+		t.Errorf("nano_cpus = %d, want 1500000000", host.NanoCpus)
+	}
+	if host.NetworkMode != string(daemon.NetworkNone) {
+		t.Errorf("network_mode = %q, want %q", host.NetworkMode, daemon.NetworkNone)
+	}
+}
+
+// A spec without a pids limit still gets the default. The request layer
+// resolves it, but a backend used directly must not be able to create an
+// unbounded container by omission.
+func TestCreateDefaultsPidsLimitWhenUnset(t *testing.T) {
+	f := newFakeDaemon(t)
+	b := f.backend(t)
+
+	if _, err := b.Create(context.Background(), daemon.ContainerSpec{Image: "alpine:3.20", MemoryMB: 64}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	host := f.creates[0].HostConfig
+	if host.PidsLimit == nil || *host.PidsLimit != DefaultPidsLimit {
+		t.Fatalf("pids_limit = %v, want the default %d", host.PidsLimit, DefaultPidsLimit)
 	}
 }
 
