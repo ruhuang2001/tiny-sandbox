@@ -1,6 +1,6 @@
 # tiny-sandbox
 
-Docker-backed code execution for AI agents, with a Go SDK, command-line
+Docker-backed code execution for AI agents, with Go and Python SDKs, a command-line
 client, and HTTP API.
 
 - **Sandbox lifecycle** — create, pause, resume, and remove containers with
@@ -42,8 +42,8 @@ second terminal. See the [CLI reference](docs/cli.md) for commands.
 
 ## Integrate
 
-Use the [Go SDK](docs/sdk.md) to manage sandboxes and execute commands from
-your application, or connect directly through the [HTTP API](docs/api.md)
+Use the [Go SDK](docs/sdk.md) or [Python SDK](docs/sdk-python.md) to manage
+sandboxes and execute commands, or connect directly through the [HTTP API](docs/api.md)
 and [OpenAPI specification](api/openapi.yaml).
 
 Add the Go SDK to your module with:
@@ -51,6 +51,16 @@ Add the Go SDK to your module with:
 ```sh
 go get github.com/ruhuang2001/tiny-sandbox/sandbox-go@latest
 ```
+
+Install the synchronous, standard-library-only Python SDK (Python 3.10+)
+from this checkout:
+
+```sh
+python3 -m pip install ./sandbox-python
+```
+
+Import it as `tiny_sandbox`; the [Python reference](docs/sdk-python.md) includes
+streaming, typed errors, cancellation, and sandbox context managers.
 
 The [agent tool example](examples/agent-tool/README.md) shows how to expose
 the SDK as a `run_python` tool with structured results and error handling.
@@ -68,6 +78,7 @@ limitations](docs/design.md) and [future directions](docs/future.md).
 - [Architecture and execution flows](docs/design.md)
 - [CLI reference](docs/cli.md)
 - [Go SDK reference](docs/sdk.md)
+- [Python SDK reference](docs/sdk-python.md)
 - [HTTP API reference](docs/api.md)
 - [Versioning and releases](docs/versioning.md)
 - [Contributing](CONTRIBUTING.md)

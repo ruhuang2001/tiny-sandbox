@@ -6,6 +6,9 @@ Status: normative. [OpenAPI specification](../api/openapi.yaml) must describe ex
 
 - Base URL: `SANDBOX_DOMAIN`, default `http://localhost:8080`. All resource paths start with `/v1`.
 - Bodies are UTF-8 JSON unless stated otherwise. Unknown request fields are ignored, so a newer client can talk to an older server; see [versioning.md](versioning.md). Malformed JSON and invalid values are still `400 invalid_request`.
+- Clients should tolerate unknown response fields and preserve unknown string
+  values. A missing additive field on an older server is unknown, not evidence
+  that a newer default or capability took effect. See the [Python SDK](sdk-python.md).
 - Timestamps are RFC 3339 in UTC. Durations are integer seconds and their field names end in `_seconds`.
 - IDs are opaque strings. Clients must not parse them.
 - Authentication: if the server was started with `SANDBOX_API_KEY` set, every `/v1` request must carry `Authorization: Bearer <key>`, otherwise `401 unauthorized`. `/healthz` never requires authentication. The key is compared in constant time.

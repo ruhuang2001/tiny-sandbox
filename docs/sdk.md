@@ -2,6 +2,10 @@
 
 Status: normative. Contract for `sandbox-go` (package `sandbox`). The SDK speaks the contract in [api.md](api.md).
 
+For the synchronous Python client, see [sdk-python.md](sdk-python.md), including
+its differences in zero-retry configuration, callback errors, and automatic
+cancellation confirmation.
+
 ## Configuration
 
 ```go

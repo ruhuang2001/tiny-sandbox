@@ -12,3 +12,11 @@
 
 # Release snapshot output.
 /dist/
+
+# Python SDK builds and local environments.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+/sandbox-python/build/
+/sandbox-python/dist/

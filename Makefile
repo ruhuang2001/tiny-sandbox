@@ -1,8 +1,9 @@
 BIN := bin
+PYTHON ?= python3
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: build test vet lint race fmt check-commit install-hooks clean
+.PHONY: build test vet lint race fmt check-commit install-hooks python-build python-e2e clean
 
 build:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN)/sandboxd ./cmd/sandboxd
@@ -30,6 +31,14 @@ check-commit:
 # Points git at the tracked hooks once per clone.
 install-hooks:
 	git config core.hooksPath .githooks
+
+# Requires the build frontend; produces local verification artifacts only.
+python-build:
+	$(PYTHON) -m build --outdir artifacts/python-dist sandbox-python
+
+# Requires Docker; creates a virtual environment unless SDK_INSTALLED=1.
+python-e2e:
+	PYTHON=$(PYTHON) bash scripts/e2e-python.sh artifacts/python-e2e
 
 clean:
 	rm -rf $(BIN)
