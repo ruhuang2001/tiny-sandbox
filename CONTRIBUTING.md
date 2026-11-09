@@ -21,12 +21,30 @@ bash scripts/coverage.sh artifacts/cov-unit artifacts/e2e/coverage 70
 goreleaser release --snapshot --clean       # six archives plus checksums
 ```
 
-CI runs four jobs: `lint`, `test` (race plus coverage), `build` (every command,
-`goreleaser check`, a snapshot, checksum verification), and `e2e` (real Docker,
-merged coverage at or above 70%, and an assertion that no containers remain).
+CI runs five jobs: `lint`, `test` (race plus coverage), `build` (every command,
+`goreleaser check`, a snapshot, checksum verification), `e2e` (real Docker,
+merged coverage at or above 70%, and an assertion that no containers remain),
+and `python-sdk` (Python 3.10 and 3.15, package builds and real-Docker E2E).
 See [versioning and release checks](docs/versioning.md) for release preparation.
 
-The Docker-backed tests are opt-in:
+The Python SDK requires Python 3.10+ and has no runtime dependencies. Its
+behavioral gate uses real Docker and an HTTP fault proxy, with repeatable
+evidence retained even on failure:
+
+```sh
+python3 -m pip install build
+make python-build
+make python-e2e
+```
+
+`python-e2e` creates a virtual environment and installs a wheel. To exercise an
+already installed wheel, set `SDK_INSTALLED=1` and select its interpreter with
+`PYTHON`. Write the failure model before implementation when testing an isolated
+system. Prefer end-to-end coverage for new behavior; do not add unit tests after
+writing the implementation. See the [Python SDK contract](docs/sdk-python.md)
+and [failure model](sandbox-python/e2e/FAILURES.md).
+
+The Docker-backed Go tests are opt-in:
 
 ```sh
 go test -tags docker ./internal/dockerbackend/ -run TestReal
@@ -56,7 +74,8 @@ make check-commit    # validate the latest commit
 ## Architecture and contracts
 
 Read the [design](docs/design.md) before changing execution or lifecycle
-behavior. The [HTTP API](docs/api.md), [Go SDK](docs/sdk.md), and
+behavior. The [HTTP API](docs/api.md), [Go SDK](docs/sdk.md),
+[Python SDK](docs/sdk-python.md), and
 [CLI](docs/cli.md) documents define the public contracts; update them with
 any behavior changes.
 

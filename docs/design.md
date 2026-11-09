@@ -1,6 +1,6 @@
 # Design
 
-tiny-sandbox provides Docker-backed code execution for AI agents through a Go SDK, CLI, and HTTP API. It uses in-memory state and does not provide hardened isolation or multi-tenant access controls.
+tiny-sandbox provides Docker-backed code execution for AI agents through Go and Python SDKs, CLI, and HTTP API. It uses in-memory state and does not provide hardened isolation or multi-tenant access controls.
 
 This document is the design source for the implementation. `api.md`, `sdk.md` and `cli.md` are normative contracts; where this document disagrees with them, they win.
 
@@ -27,7 +27,7 @@ This project answers those questions with working code and tests rather than pro
 
 ## Non-goals
 
-Templates, snapshots, volumes, secrets, multi-tenancy, billing, browser automation, non-Go SDKs, durable server state, and hardened isolation (microVMs, gVisor). Each has an extension point and a design sketch in [future.md](future.md).
+Templates, snapshots, volumes, secrets, multi-tenancy, billing, browser automation, additional SDK languages, durable server state, and hardened isolation (microVMs, gVisor). Each has an extension point and a design sketch in [future.md](future.md).
 
 ## Architecture
 
@@ -54,7 +54,8 @@ internal/daemon/         state machine, execution engine, classification, HTTP h
 internal/dockerapi/      minimal Engine API client: create, start, exec, inspect, pause, kill
 internal/dockerbackend/  Backend implementation over dockerapi; cgroup reads
 api/                     openapi.yaml plus contract.go with go:embed
-sandbox-go/              SDK: client, sandbox and file methods, exec, stream, retry, errors
+sandbox-go/              Go SDK: client, sandbox and file methods, exec, stream, retry, errors
+sandbox-python/          Python SDK: typed synchronous client, cancellation, replay, Docker E2E
 examples/agent-tool/     the SDK used as an agent tool function (built and tested in CI)
 ```
 
@@ -306,7 +307,10 @@ State lives in memory. On startup, the server attempts to remove containers carr
 
 ## Verification
 
-Three layers, each answering a different question:
+The existing Go suite has three layers, each answering a different question.
+The Python SDK covers the same semantics through installed-package E2E against
+real Docker, including an HTTP fault proxy for retry, replay and cancellation
+failures; see its [failure model](../sandbox-python/e2e/FAILURES.md).
 
 | Layer | Where | Question |
 |---|---|---|
@@ -322,9 +326,14 @@ Rules:
 - `api/openapi.yaml` and the router must not drift: a test parses the spec's path set and compares it both ways with the routes the server registers.
 - Anything not actually run is labelled `not run` in the documentation. Local `act` runs are not reported as remote CI.
 
+Python has one Error exception, keyword-only request dataclasses, explicit
+cancellation tokens, and terminal-state confirmation during automatic cleanup.
+See the normative [Python SDK contract](sdk-python.md) for its compatibility
+policy and deliberate differences from Go.
+
 ## CI/CD
 
-The reusable CI workflow has four jobs:
+The reusable CI workflow has five jobs:
 
 | Job | Contents |
 |---|---|
@@ -333,8 +342,11 @@ The reusable CI workflow has four jobs:
 | `build` | `go build ./...`, both commands, the example, `goreleaser check`, six snapshot archives and checksum verification |
 | `e2e` | Docker-backed suite with coverage instrumentation; enforces the merged coverage gate; uploads `artifacts/`; asserts no containers remain |
 
+The Python SDK job builds and installs its distribution on Python 3.10 and
+3.15, runs real-Docker fault scenarios, and uploads reports and cleanup evidence.
+
 CI builds GoReleaser snapshots: six platform archives plus a checksum file.
-The Release workflow calls those same four jobs against the exact tagged
+The Release workflow calls those same jobs against the exact tagged
 commit, then builds and publishes non-snapshot artifacts. It supports tag
 pushes and manual dispatch for existing tags, verifies downloaded draft
 attachments before publication, and refuses to overwrite published releases.

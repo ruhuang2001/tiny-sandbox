@@ -9,7 +9,7 @@ The current implementation covers sandbox lifecycle, execution, streaming, error
 | Secret injection | Short-lived, narrowly scoped credentials; redaction in logs and server-side audit | Leakage through logs, environment variables, or untrusted code |
 | Multi-tenancy and billing | Tenant-scoped scheduling, quotas, metering, and explicit resource termination | Noisy neighbours, authorization, billing correctness |
 | Browser automation | Isolated browser images, network controls, artifact capture, session timeouts | Larger attack surface, heavier resource use |
-| More SDK languages | Generate from the stable OpenAPI core, then test idiomatic errors, streaming, and cancellation per language | Semantic drift across Python, TypeScript, and Go |
+| Additional SDK languages beyond Go and Python | Generate plain requests from the stable OpenAPI core, then implement and verify retries, replay, errors and cancellation per language | Semantic drift between clients |
 | Kubernetes or microVM backend | Implement the existing `daemon.Backend` interface and verify lifecycle and execution semantics against the new runtime | Pause, OOM, eviction, and network semantics differ |
 | Durable control plane | Persist records, reconcile with the runtime on boot, resume after restart | Recovery after partial failures, orphan cleanup, and event continuity |
 | Persistent output storage | Quota-backed stdout/stderr and replay buffers, sharded fetches for large results, an explicit over-limit error | Preserve explicit truncation signals and retention limits across restarts |

@@ -24,7 +24,8 @@ The compatibility surface is wider than the Go API:
 
 - CLI flags, environment variables, and exit codes;
 - JSON request and response fields;
-- SDK error types and the sentinel values `errors.Is` matches;
+- SDK method signatures, request/response fields, and error types;
+- Go sentinel values matched by `errors.Is` and Python `Error.code` values;
 - timeout units and their meaning;
 - SSE event types, event ID semantics, and `Last-Event-ID` behaviour.
 
@@ -35,6 +36,21 @@ The compatibility surface is wider than the Go API:
 Prefer a new optional field or a new operation over changing an existing one. The server ignores unknown request fields, so a newer client can talk to an older server; the old server simply does not act on the new field. The client must therefore not assume a field took effect, and must document which contract version it needs. Old clients keep working against a new server because responses only gain fields.
 
 Removing a field, changing a unit, or reinterpreting an existing value is a major change.
+
+Clients must tolerate added response fields and preserve unknown string values.
+The Python SDK retains extra fields in `extra` and represents missing additive
+resource fields as `None`, rather than pretending a server applied a default.
+Its execution conveniences surface unknown termination reasons as errors.
+
+## Python distribution
+
+The Python distribution is named `tiny-sandbox` and imported as `tiny_sandbox`.
+Its package version is declared in `sandbox-python/pyproject.toml`. Keep it
+aligned with the project release when preparing a release; the minimum
+supported interpreter is Python 3.10. This change adds local wheel/source
+distribution builds and CI verification only. It does not publish to PyPI or
+add Python assets to the binary release workflow. Install from the checkout
+with `python3 -m pip install ./sandbox-python`.
 
 ## Release checklist
 
@@ -50,6 +66,9 @@ mkdir -p artifacts/cov-unit
 go test -race -covermode=atomic -coverpkg=./... ./... \
   -args -test.gocoverdir="$PWD/artifacts/cov-unit"
 bash scripts/coverage.sh artifacts/cov-unit artifacts/e2e/coverage 70
+python3 -m pip install build
+make python-build
+make python-e2e
 ```
 
 The coverage steps follow CI: `coverage.sh` merges both profiles and enforces
@@ -81,8 +100,9 @@ dispatch from `main` without moving the tag:
 gh workflow run release.yml --ref main -f tag=v0.0.1
 ```
 
-The workflow resolves the tag to an immutable commit on `main`, runs all four
-CI jobs against that commit, and only then grants the publishing job
+The workflow resolves the tag to an immutable commit on `main`, runs all
+CI jobs (including the Python matrix) against that commit, and only then grants
+the publishing job
 `contents: write`. It builds six non-snapshot archives, verifies their
 checksums and native version output, uploads to a draft, downloads the
 attachments again, and checks them against the CI build before publishing.
@@ -115,5 +135,6 @@ canarying, and automated rollback are outside this repository's scope.
 
 The [CI workflow](../.github/workflows/ci.yml), [Release workflow](../.github/workflows/release.yml),
 [GoReleaser configuration](../.goreleaser.yaml),
-[E2E script](../scripts/e2e.sh), and [coverage merger](../scripts/coverage.sh)
+[E2E script](../scripts/e2e.sh), [Python E2E script](../scripts/e2e-python.sh),
+and [coverage merger](../scripts/coverage.sh)
 are the executable sources for the checks described here.
