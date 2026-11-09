@@ -25,6 +25,14 @@ const (
 	MaxFileBytes = 10 << 20
 	// MaxRequestBodyBytes is the largest JSON request body.
 	MaxRequestBodyBytes = 1 << 20
+	// MaxExecutionsPerSandbox bounds the execution history. Above it, the
+	// oldest completed execution and its retained output are dropped; the
+	// running execution is never dropped.
+	MaxExecutionsPerSandbox = 200
+	// BackendCallTimeout bounds one container-runtime call. The reaper shares
+	// one goroutine, so a call that never returns would stop timeout and
+	// eviction checks for every sandbox.
+	BackendCallTimeout = 5 * time.Second
 )
 
 // State is a sandbox lifecycle state: pending, running, paused, or killed.

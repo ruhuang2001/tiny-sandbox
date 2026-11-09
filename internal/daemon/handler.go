@@ -322,8 +322,17 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pingDone := make(chan struct{})
-	defer close(pingDone)
+	var pingWait sync.WaitGroup
+	pingWait.Add(1)
+	defer func() {
+		// Stop the ping before returning: net/http reuses the response writer
+		// after ServeHTTP returns, and a ping still inside Write would race
+		// with the next request on the same connection.
+		close(pingDone)
+		pingWait.Wait()
+	}()
 	go func() {
+		defer pingWait.Done()
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {

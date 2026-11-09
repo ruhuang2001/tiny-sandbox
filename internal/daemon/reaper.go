@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+// backendCtx bounds one reaper-driven backend call. The reaper is one
+// goroutine visiting every sandbox, so a call that never returns would stop
+// timeout and eviction checks for all of them; a deadline turns that into a
+// skipped sandbox retried on the next beat.
+func backendCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, BackendCallTimeout)
+}
+
 // dueTimeout reports which timeout, if any, is due for sb at now.
 func (sb *sandbox) dueTimeout(now time.Time) (reason KillReason, ok bool) {
 	if sb.opts.timeoutSeconds > 0 && sb.deadlined(now) {
@@ -62,7 +70,10 @@ func (s *Sandboxes) reapOne(ctx context.Context, sb *sandbox, now time.Time) {
 		if sb.state != StateRunning {
 			return
 		}
-		if err := s.backend.Pause(ctx, sb.container); err != nil {
+		callCtx, cancel := backendCtx(ctx)
+		err := s.backend.Pause(callCtx, sb.container)
+		cancel()
+		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				s.killLocked(sb, KillEvicted)
 			}
@@ -72,8 +83,27 @@ func (s *Sandboxes) reapOne(ctx context.Context, sb *sandbox, now time.Time) {
 		sb.state = StatePaused
 		sb.expiresAt = nil
 	case ActionKill:
-		s.terminateLocked(ctx, sb, reason)
+		callCtx, cancel := backendCtx(ctx)
+		terminated := s.terminateWith(callCtx, sb, reason)
+		cancel()
+		if !terminated {
+			// Removal failed or timed out. The record is still killed; the
+			// container is left for startup cleanup, as the contract says.
+			return
+		}
 	}
+}
+
+// terminateWith is terminateLocked with a report of whether removal succeeded,
+// so the reaper can tell a completed transition from one whose container is
+// still around. ctx already carries the reaper's per-call deadline; wrapping
+// it in WithoutCancel would drop that deadline, so it is used as is.
+func (s *Sandboxes) terminateWith(ctx context.Context, sb *sandbox, reason KillReason) bool {
+	s.killLocked(sb, reason)
+	if sb.container == "" {
+		return true
+	}
+	return s.backend.Remove(ctx, sb.container) == nil
 }
 
 // EvictSweep checks every live sandbox's container and evicts those whose
@@ -90,7 +120,9 @@ func (s *Sandboxes) EvictSweep(ctx context.Context) {
 			continue
 		}
 		if sb.state == StateRunning || sb.state == StatePaused {
-			liveness, err := s.backend.Liveness(ctx, sb.container)
+			callCtx, cancel := backendCtx(ctx)
+			liveness, err := s.backend.Liveness(callCtx, sb.container)
+			cancel()
 			switch {
 			case err != nil:
 				// Unreadable is not proof of death; the next sweep asks again.

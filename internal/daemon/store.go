@@ -160,6 +160,35 @@ type sandbox struct {
 	streams int
 }
 
+// pruneExecutionsLocked enforces MaxExecutionsPerSandbox. Callers hold sb.mu.
+//
+// Dropping a completed execution also drops its idempotency key, so a replay
+// of a key that is older than the retained history starts a new execution
+// instead of returning the old record. That is the deliberate trade: keeping
+// every key forever makes the map grow without bound, and the alternative —
+// keeping the record but discarding its output — still costs a record per
+// command and still leaves the memory question open. The contract documents the
+// window. The running execution is never dropped.
+func (sb *sandbox) pruneExecutionsLocked() {
+	if len(sb.executions) <= MaxExecutionsPerSandbox {
+		return
+	}
+	drop := 0
+	for drop < len(sb.executions) && len(sb.executions)-drop > MaxExecutionsPerSandbox {
+		ex := sb.executions[drop]
+		if ex == sb.running || !ex.completed() {
+			// Stop at the first execution that must stay: dropping a later
+			// one would leave a hole in the history and in event replay.
+			return
+		}
+		if ex.key != "" && sb.idempotency[ex.key] == ex {
+			delete(sb.idempotency, ex.key)
+		}
+		drop++
+	}
+	sb.executions = append([]*execution(nil), sb.executions[drop:]...)
+}
+
 // ---------------------------------------------------------------- creation
 
 // Create starts a container and returns the sandbox once it is running.
@@ -413,12 +442,18 @@ func (s *Sandboxes) killLocked(sb *sandbox, reason KillReason) {
 
 // terminateLocked kills the sandbox and removes its container. Removal is
 // best effort: a container that is already gone is not an error, and a
-// backend failure leaves the startup cleanup to catch the leftover.
+// backend failure leaves the startup cleanup to catch the leftover. The
+// removal is detached from the caller's context (a delete must not be
+// cancelled halfway by a disconnecting client) but bounded, so a runtime that
+// never answers does not pin the sandbox lock forever.
 func (s *Sandboxes) terminateLocked(ctx context.Context, sb *sandbox, reason KillReason) {
 	s.killLocked(sb, reason)
-	if sb.container != "" {
-		_ = s.backend.Remove(context.WithoutCancel(ctx), sb.container)
+	if sb.container == "" {
+		return
 	}
+	removeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), BackendCallTimeout)
+	defer cancel()
+	_ = s.backend.Remove(removeCtx, sb.container)
 }
 
 // ---------------------------------------------------------------- helpers

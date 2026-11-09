@@ -195,3 +195,37 @@ func TestExecutionStartsAreSerialized(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 }
+
+// TestCancelIgnoresTheCallersDeadline pins the rule that the escalation waits
+// are bounded by the cancel grace and deadline, not by the request context. A
+// client that gives up on the cancel request must not make the server skip
+// SIGTERM's grace and remove the container immediately.
+func TestCancelIgnoresTheCallersDeadline(t *testing.T) {
+	h := newHarness(t)
+	h.be.Programs["block"] = memLongBlock
+	sb := h.create(daemon.CreateRequest{TimeoutSeconds: ptr(0)})
+	ex, _, err := h.s.StartExecution(context.Background(), sb.ID, daemon.ExecuteRequest{Command: []string{"block"}})
+	wantNoError(t, err)
+
+	// The caller's context is already done when the cancel starts.
+	caller, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done, err := h.s.CancelExecution(caller, sb.ID, ex.ID)
+	wantNoError(t, err)
+	if done.State != daemon.ExecCompleted {
+		t.Fatalf("state = %s, want completed", done.State)
+	}
+	if done.TerminationReason == nil || *done.TerminationReason != daemon.ReasonCanceled {
+		t.Fatalf("reason = %v, want canceled", done.TerminationReason)
+	}
+
+	sandbox, err := h.s.Get(sb.ID)
+	wantNoError(t, err)
+	if sandbox.State != daemon.StateRunning {
+		t.Fatalf("sandbox state = %s; a canceled caller context must not destroy the sandbox", sandbox.State)
+	}
+	if h.be.State(h.containerOf(sb.ID)) == daemon.LivenessMissing {
+		t.Fatal("container was removed because the caller's context was done")
+	}
+}

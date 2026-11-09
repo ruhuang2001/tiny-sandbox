@@ -127,6 +127,25 @@ func (ex *execution) completed() bool {
 	return ex.state == ExecCompleted
 }
 
+// summary returns the contract view without copying retained output. List
+// endpoints use it so a sandbox with a long history does not copy every
+// execution's stdout and stderr only to discard them.
+func (ex *execution) summary() ExecutionSummary {
+	ex.mu.Lock()
+	defer ex.mu.Unlock()
+	return ExecutionSummary{
+		ID:                ex.id,
+		SandboxID:         ex.sandboxID,
+		Command:           append([]string(nil), ex.command...),
+		State:             ex.state,
+		ExitCode:          cloneInt(ex.exitCode),
+		TerminationReason: cloneReason2(ex.reason),
+		OutputTruncated:   ex.log.truncatedOutput(),
+		StartedAt:         ex.startedAt,
+		FinishedAt:        cloneTime(ex.finished),
+	}
+}
+
 // ---------------------------------------------------------------- start
 
 // StartExecution starts command in the sandbox.
@@ -191,9 +210,16 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 	// request's context is fine there. The process itself outlives the
 	// request that started it: net/http cancels the request context when the
 	// handler returns, and a command must keep running after that.
-	baseline, oomErr := s.backend.OOMKillCount(ctx, sb.container)
+	//
+	// One failed read would otherwise disable OOM attribution for the whole
+	// execution (baseline -1 makes the classifier skip the delta check), so
+	// the read is retried once. A second failure is rare and is reported in
+	// the log, because OOM detection is the one thing a 137 cannot recover
+	// from afterwards.
+	baseline, oomErr := s.readOOMPaseline(ctx, sb.container)
 	if oomErr != nil {
-		baseline = -1
+		log.Printf("daemon: oom baseline for %s unavailable, oom detection disabled for this execution: %v",
+			sb.id, oomErr)
 	}
 
 	proc, err := s.backend.Exec(context.WithoutCancel(ctx), sb.container, req.Command)
@@ -220,6 +246,7 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 		sb.idempotency[ex.key] = ex
 	}
 	sb.lastActivity = s.now()
+	sb.pruneExecutionsLocked()
 	// The contract reports the execution as running with empty output; the
 	// pumps below deliver the rest through the event log.
 	out := ex.snapshotLocked()
@@ -227,6 +254,21 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 
 	go s.run(sb, ex)
 	return out, true, nil
+}
+
+// readOOMPaseline returns the cgroup oom_kill counter, retrying once. A
+// failed read is reported to the caller, which records -1: the classifier then
+// skips the delta check rather than guess.
+func (s *Sandboxes) readOOMPaseline(ctx context.Context, containerID string) (int64, error) {
+	baseline, err := s.backend.OOMKillCount(ctx, containerID)
+	if err == nil {
+		return baseline, nil
+	}
+	baseline, retryErr := s.backend.OOMKillCount(ctx, containerID)
+	if retryErr != nil {
+		return -1, retryErr
+	}
+	return baseline, nil
 }
 
 // run pumps output, waits for the process, classifies the exit, and finishes
@@ -283,17 +325,38 @@ func (s *Sandboxes) run(sb *sandbox, ex *execution) {
 }
 
 // pump copies r into the event log in chunks no larger than the per-event
-// limit. A read error ends the pump; the process wait is the authority on the
-// outcome.
+// limit. A read can end inside a UTF-8 sequence, and an event whose payload is
+// half a rune would be turned into U+FFFD by the JSON encoder on the wire, so
+// the incomplete tail is carried into the next read instead of being
+// delivered. At most utf8.UTFMax-1 bytes are ever pending. A read error ends
+// the pump; the process wait is the authority on the outcome.
 func pump(log *eventLog, kind EventType, r io.Reader) {
 	if r == nil {
 		return
 	}
 	buf := make([]byte, MaxEventDataBytes)
+	carry := 0
 	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			log.appendOutput(kind, buf[:n])
+		// Read at most MaxEventDataBytes in total, so a large write produces
+		// full events rather than a full one plus a small remainder.
+		n, err := r.Read(buf[carry:])
+		total := carry + n
+
+		// Hold back a partial rune; the next read completes it. Nothing is
+		// held back at EOF: a truncated sequence has no completion coming,
+		// and the encoder will substitute U+FFFD for it.
+		tail := 0
+		if err == nil && total > 0 {
+			tail = incompleteRuneTail(buf[:total])
+		}
+		if total-tail > 0 {
+			log.appendOutput(kind, buf[:total-tail])
+		}
+		carry = tail
+		if tail > 0 {
+			// Move the pending bytes to the front only after the data before
+			// them has been sent: copying first would overwrite that data.
+			copy(buf, buf[total-tail:total])
 		}
 		if err != nil {
 			return
@@ -335,23 +398,30 @@ func (s *Sandboxes) CancelExecution(ctx context.Context, sandboxID, executionID 
 	// Record the intent before acting: it explains whatever exit code follows.
 	ex.setIntent(ReasonCanceled)
 
+	// The escalation waits below must not inherit the caller's request
+	// context. A client that gives up on the cancel request (a timeout, a
+	// closed terminal, a dropped proxy connection) would otherwise cut both
+	// waits short and move straight to removing the container, turning a
+	// slow signal into sandbox destruction. The cancel grace and deadline
+	// bound the action; the connection does not.
+	cleanup := context.WithoutCancel(ctx)
 	_ = ex.proc.Signal(SignalTerm)
-	if s.waitDone(ctx, ex.done, s.cancelGrace) {
+	if s.waitDone(cleanup, ex.done, s.cancelGrace) {
 		return ex.snapshot(), nil
 	}
 	_ = ex.proc.Signal(SignalKill)
-	if s.waitDone(ctx, ex.done, s.cancelDeadline-s.cancelGrace) {
+	if s.waitDone(cleanup, ex.done, s.cancelDeadline-s.cancelGrace) {
 		return ex.snapshot(), nil
 	}
 
 	// The process tree could not be confirmed gone. Removing the container is
 	// the only way to guarantee nothing keeps running.
 	sb.mu.Lock()
-	s.terminateLocked(context.WithoutCancel(ctx), sb, KillRequested)
+	s.terminateLocked(cleanup, sb, KillRequested)
 	sb.mu.Unlock()
 	// Removing the container ends the process, so the runner finishes the
 	// execution. Give it a moment, then report what is known.
-	s.waitDone(context.WithoutCancel(ctx), ex.done, s.cancelGrace)
+	s.waitDone(cleanup, ex.done, s.cancelGrace)
 	return ex.snapshot(), nil
 }
 
@@ -402,7 +472,10 @@ func (s *Sandboxes) ListExecutions(sandboxID string) ([]ExecutionSummary, error)
 
 	out := make([]ExecutionSummary, 0, len(list))
 	for i := len(list) - 1; i >= 0; i-- {
-		out = append(out, list[i].snapshot().Summary())
+		// summary() reads the fields without copying retained output, so a
+		// long history costs one slice allocation, not one output copy per
+		// execution.
+		out = append(out, list[i].summary())
 	}
 	return out, nil
 }
@@ -444,10 +517,18 @@ type Stream struct {
 // replays from the first event, which reproduces the retained stdout and
 // stderr exactly. The stream must be closed; an open stream counts as
 // activity for the idle timeout.
+//
+// A cursor beyond the newest event is rejected: no event will ever have the
+// requested ID, and a running execution would otherwise leave the caller
+// waiting for a replay that cannot arrive.
 func (s *Sandboxes) Events(sandboxID, executionID string, lastEventID uint64) (*Stream, error) {
 	_, ex, err := s.execution(sandboxID, executionID)
 	if err != nil {
 		return nil, err
+	}
+	if newest := ex.log.lastEventID(); lastEventID > newest {
+		return nil, errorf(CodeInvalidRequest,
+			"Last-Event-ID %d is beyond the newest event %d", lastEventID, newest)
 	}
 	closeStream, err := s.OpenStream(sandboxID)
 	if err != nil {
