@@ -69,6 +69,50 @@ examples/agent-tool/     the SDK used as an agent tool function (built and teste
 - A single reaper performs timeout transitions; ordinary reads do not apply timeouts. File access can resume a paused sandbox, and requests may detect external eviction. The store takes an injectable clock, so timeout tests are deterministic.
 - Pause uses Docker pause, which freezes the container's cgroup. Process memory is retained and a paused process continues from the same point after resume. A filesystem commit or snapshot is a different thing: it keeps files, not running processes.
 
+### Container hardening
+
+The backend fixes limits the HTTP contract does not expose. A caller running
+untrusted code cannot be trusted to choose them, and each one closes a failure
+mode that reaches past the sandbox:
+
+- **Pids limit, 1024.** A fork bomb costs task slots, not memory, so the memory
+  limit alone does not stop it; without a pids limit it runs until the host's
+  PID table is empty and every other sandbox stalls. The value counts tasks, so
+  a JVM or a Go build still fits.
+- **An init process as PID 1** (`Init`). The container's keep-alive command is
+  `sleep infinity`, which never calls `wait`. A pids limit turns that into a
+  slow leak: every child whose parent exits is reparented to PID 1 and stays a
+  zombie, holding a slot forever, so a sandbox that forked once eventually
+  cannot fork at all. Docker's init reaps them. The e2e suite forks a thousand
+  children and then runs a fresh multi-process command, which fails if the
+  slots were not released.
+- **`NET_RAW` and `MKNOD` dropped.** No raw packet crafting, no device nodes.
+  The rest of Docker's default capability set is kept because `apk`, `pip` and
+  `apt` were verified to install under it.
+- **`no-new-privileges`.** A setuid binary in the image cannot raise privileges
+  inside the container.
+
+CPU limits are not set yet. A busy loop therefore competes with the daemon and
+with every other sandbox, and the fix is a create-time option (PR for resource
+knobs) rather than a fixed default, because the right value depends on the
+workload.
+
+A process tree that fills the pids limit is also the one case where cancel
+degrades: the in-container helper that reads the PID file and signals the group
+needs a task slot of its own, and the full limit denies it. Cancellation then
+follows its existing escalation — SIGTERM, SIGKILL, and if neither can be
+confirmed, container removal — so the sandbox is destroyed along with the
+command. That is the price of a hard task ceiling, and it is still strictly
+better than the alternative it replaces, where the same fork bomb exhausts the
+host instead and takes every other sandbox with it. Keeping a few slots free
+for the daemon is not a fix: any fixed ceiling can be reached exactly.
+
+The e2e suite asserts these from the container's own cgroup and `/proc`, not
+from the request struct: a limit that is sent but not applied is the failure
+this check exists to catch. Network access is deliberately unchanged, and
+making it controllable is a create-time decision, because Docker cannot change
+a container's network after creation.
+
 ### Executions and streaming
 
 - An execution is a resource under a sandbox: `/v1/sandboxes/{id}/executions/{execution_id}`. Its ID is what makes replay and cancellation possible.

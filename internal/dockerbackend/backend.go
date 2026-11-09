@@ -39,7 +39,38 @@ const PidDir = "/run/tiny-sandbox"
 
 // initCommand keeps the container alive between executions. Every image the
 // backend supports has sh and sleep; `sleep infinity` needs no shell.
+//
+// It is not PID 1: HostConfig.Init puts Docker's init process first, because
+// PID 1 is what reaps orphaned grandchildren and `sleep infinity` never calls
+// wait. Under a pids limit an unreaped zombie is a permanently lost task slot.
 var initCommand = []string{"sleep", "infinity"}
+
+// Hardening defaults. They are fixed by the backend rather than by the request
+// because a caller who runs untrusted code cannot be trusted to pick limits
+// that protect the host. Fields the contract does not expose stay here until
+// there is a reason and an e2e test for each knob.
+const (
+	// DefaultPidsLimit bounds processes and threads per sandbox. The value is
+	// counted by the pids cgroup, which counts tasks, not processes: a JVM or
+	// a Go build needs hundreds of threads. Memory limits do not constrain
+	// process count, so without this a fork bomb runs until the host's PID
+	// table is empty and every other sandbox (and the daemon) stalls.
+	DefaultPidsLimit = 1024
+)
+
+// sandboxCapDrop removes the capabilities no sandbox needs: NET_RAW stops raw
+// packet crafting and ICMP-level spoofing, MKNOD stops creating device nodes
+// that could reach host devices. The rest of Docker's default set is kept
+// because package managers need it: apk, pip and apt were verified to install
+// with these defaults plus no-new-privileges. Dropping ALL also works for
+// those three, but it removes SETUID/SETGID and breaks images that expect a
+// setuid helper such as ping or sudo, so it is a separate decision.
+var sandboxCapDrop = []string{"NET_RAW", "MKNOD"}
+
+// sandboxSecurityOpt applies no-new-privileges: a setuid binary in the image
+// stays useless, so `sudo` and file capabilities cannot raise privileges even
+// inside the container.
+var sandboxSecurityOpt = []string{"no-new-privileges"}
 
 // Backend is a daemon.Backend over a Docker daemon.
 type Backend struct {
@@ -70,14 +101,20 @@ func Dial(ctx context.Context, socketPath string) (*Backend, error) {
 // container is running, as the Backend contract requires.
 func (b *Backend) Create(ctx context.Context, spec daemon.ContainerSpec) (string, error) {
 	limit := int64(spec.MemoryMB) << 20
+	pids := int64(DefaultPidsLimit)
+	initProcess := true
 	cfg := dockerapi.ContainerConfig{
 		Image:  spec.Image,
 		Cmd:    initCommand,
 		Labels: spec.Labels,
 		HostConfig: dockerapi.HostConfig{
-			Memory:     limit,
-			MemorySwap: limit, // no swap: the limit the user asked for is the limit
-			Tmpfs:      map[string]string{PidDir: "rw,size=1m,mode=1777"},
+			Memory:      limit,
+			MemorySwap:  limit, // no swap: the limit the user asked for is the limit
+			PidsLimit:   &pids,
+			CapDrop:     sandboxCapDrop,
+			SecurityOpt: sandboxSecurityOpt,
+			Tmpfs:       map[string]string{PidDir: "rw,size=1m,mode=1777"},
+			Init:        &initProcess,
 		},
 	}
 
