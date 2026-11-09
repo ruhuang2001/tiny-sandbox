@@ -53,11 +53,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: build every command
+      - name: build every command and the example
         run: |
           go build ./...
           go build -o /dev/null ./cmd/sandboxd
           go build -o /dev/null ./cmd/sandboxctl
+          go build -o /dev/null ./examples/agent-tool/cmd/demo
       - name: check release configuration
         uses: goreleaser/goreleaser-action@v6
         with:

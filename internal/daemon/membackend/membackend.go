@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 
 	"github.com/ruhuang2001/tiny-sandbox/internal/daemon"
@@ -326,6 +327,19 @@ func (b *Backend) setIgnore(id string, term, kill bool) {
 		c.proc.ignoreKill = kill
 		c.proc.mu.Unlock()
 	}
+}
+
+// IDs returns every container ID the backend knows, in creation order. Tests
+// use it when they hold a sandbox ID but need the container behind it.
+func (b *Backend) IDs() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ids := make([]string, 0, len(b.containers))
+	for id := range b.containers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // SetOOMKills sets the container's oom_kill counter, as the kernel would.
