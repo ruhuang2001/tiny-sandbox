@@ -192,6 +192,49 @@ func TestStreamReconnectsFromLastEventID(t *testing.T) {
 	}
 }
 
+func TestStreamDropsEventsAtOrBelowTheCursor(t *testing.T) {
+	f := newFakeServer(t)
+	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// A server that replays out of order, and repeats an ID it already
+		// sent: the stream must deliver each ID at most once, in order.
+		_, _ = io.WriteString(w, sseFrame(2, EventStdout, `{"data":"two\n"}`))
+		_, _ = io.WriteString(w, sseFrame(1, EventStdout, `{"data":"stale\n"}`))
+		_, _ = io.WriteString(w, sseFrame(2, EventStdout, `{"data":"again\n"}`))
+		_, _ = io.WriteString(w, sseFrame(3, EventComplete, completePayload("exe_1")))
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+	})
+
+	c := f.client(t, 0)
+	var ids []uint64
+	var out strings.Builder
+	_, err := c.StreamExecution(context.Background(), "sbx_1", "exe_1", func(ev Event) error {
+		ids = append(ids, ev.ID)
+		if ev.Type == EventStdout {
+			out.WriteString(ev.Data)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if out.String() != "two\n" {
+		t.Errorf("delivered output = %q, want only the first event at or above the cursor", out.String())
+	}
+	want := []uint64{2, 3}
+	if len(ids) != len(want) {
+		t.Fatalf("delivered ids = %v, want %v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("delivered ids = %v, want %v", ids, want)
+		}
+	}
+}
+
 func TestStreamCallbackErrorStopsWithoutCancel(t *testing.T) {
 	f := newFakeServer(t)
 	f.setHandler(func(w http.ResponseWriter, _ *http.Request) {

@@ -26,9 +26,15 @@ type Handler struct {
 }
 
 // NewHandler returns the server's HTTP handler over store.
+//
+// It panics when a route in the table has no handler. That is deliberate: the
+// alternative is a route that answers 503 on its first request, which the
+// route coverage test cannot see, because a mux with a fallback handler still
+// reports a matching pattern. A missing handler is a programming error and
+// must fail at startup, not under load.
 func NewHandler(store *Sandboxes, version string) *Handler {
 	h := &Handler{store: store, version: version}
-	h.mux = h.buildMux(Routes(version))
+	h.mux = h.buildMux()
 	return h
 }
 
@@ -64,56 +70,28 @@ func (h *Handler) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) == 1
 }
 
-// buildMux turns the route table into a mux. Routes whose handler is nil get
-// the store-backed handler for their operation; the health route keeps its
-// own.
-func (h *Handler) buildMux(routes []Route) *http.ServeMux {
-	mux := http.NewServeMux()
-	for _, route := range routes {
-		handle := route.Handle
-		if handle == nil {
-			handle = h.handlerFor(route.Method, route.Path)
-		}
-		mux.HandleFunc(route.Method+" "+route.Path, handle)
-	}
-	return mux
+// buildMux turns the route table into a mux.
+func (h *Handler) buildMux() *http.ServeMux {
+	return newMux(h, routes)
 }
 
-// handlerFor returns the handler for one contract operation, matching the
-// route table's exact method and path template. Path parameters are read with
-// Request.PathValue, so the handler does not depend on the router's internals.
-func (h *Handler) handlerFor(method, path string) http.HandlerFunc {
-	key := method + " " + path
-	switch key {
-	case "POST /v1/sandboxes":
-		return h.createSandbox
-	case "GET /v1/sandboxes":
-		return h.listSandboxes
-	case "GET /v1/sandboxes/{sandbox_id}":
-		return h.getSandbox
-	case "DELETE /v1/sandboxes/{sandbox_id}":
-		return h.deleteSandbox
-	case "POST /v1/sandboxes/{sandbox_id}/pause":
-		return h.pauseSandbox
-	case "POST /v1/sandboxes/{sandbox_id}/resume":
-		return h.resumeSandbox
-	case "POST /v1/sandboxes/{sandbox_id}/executions":
-		return h.startExecution
-	case "GET /v1/sandboxes/{sandbox_id}/executions":
-		return h.listExecutions
-	case "GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}":
-		return h.getExecution
-	case "POST /v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel":
-		return h.cancelExecution
-	case "GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/events":
-		return h.streamEvents
-	case "GET /v1/sandboxes/{sandbox_id}/files":
-		return h.readFile
-	case "PUT /v1/sandboxes/{sandbox_id}/files":
-		return h.writeFile
-	default:
-		return notImplemented
+// newMux registers table routes on a mux. An entry with no handler is a
+// programming error and panics here, at construction, rather than answering
+// 503 on its first request. It is a function of the table rather than of
+// Handler alone so a test can pass a hand-built table and observe the panic.
+func newMux(h *Handler, table []Route) *http.ServeMux {
+	mux := http.NewServeMux()
+	for _, route := range table {
+		key := routeKey(route.Method, route.Path)
+		if route.handle == nil {
+			panic("daemon: no handler for " + key)
+		}
+		handle := route.handle
+		mux.HandleFunc(key, func(w http.ResponseWriter, r *http.Request) {
+			handle(h, w, r)
+		})
 	}
+	return mux
 }
 
 // ---------------------------------------------------------------- sandboxes
