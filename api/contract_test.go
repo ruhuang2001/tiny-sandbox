@@ -122,7 +122,7 @@ func TestServerRoutesMatchSpec(t *testing.T) {
 		t.Fatalf("parse embedded spec: %v", err)
 	}
 
-	routes := daemon.Routes("test-version")
+	routes := daemon.Routes()
 	served := make([]api.Operation, 0, len(routes))
 	be := membackend.New()
 	mux := daemon.NewHandler(daemon.New(be), "test-version")
