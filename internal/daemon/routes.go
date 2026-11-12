@@ -12,34 +12,51 @@ type Operation struct {
 	Path   string
 }
 
+// routeHandler is the shape of every Handler method that serves a route: a
+// method expression such as (*Handler).createSandbox. It is not http.HandlerFunc
+// because the table stores unbound methods, so the same table serves any
+// Handler instance.
+type routeHandler func(*Handler, http.ResponseWriter, *http.Request)
+
+// Route is an Operation bound to the handler that serves it. Keeping the two
+// together is what makes the table the single source of truth: adding an
+// operation means adding one entry, and there is no second list to forget.
+type Route struct {
+	Operation
+	handle routeHandler
+}
+
 // routes is the single list of contract operations, in registration order.
-// The mux, the handler switch, and the contract tests all work from it, so an
-// operation cannot be added in one place and forgotten in another.
-var routes = []Operation{
-	{http.MethodGet, "/healthz"},
+// The mux, the handler lookup, and the contract tests all work from it.
+var routes = []Route{
+	{Operation{http.MethodGet, "/healthz"}, (*Handler).handleHealth},
 
-	{http.MethodPost, "/v1/sandboxes"},
-	{http.MethodGet, "/v1/sandboxes"},
-	{http.MethodGet, "/v1/sandboxes/{sandbox_id}"},
-	{http.MethodDelete, "/v1/sandboxes/{sandbox_id}"},
-	{http.MethodPost, "/v1/sandboxes/{sandbox_id}/pause"},
-	{http.MethodPost, "/v1/sandboxes/{sandbox_id}/resume"},
+	{Operation{http.MethodPost, "/v1/sandboxes"}, (*Handler).createSandbox},
+	{Operation{http.MethodGet, "/v1/sandboxes"}, (*Handler).listSandboxes},
+	{Operation{http.MethodGet, "/v1/sandboxes/{sandbox_id}"}, (*Handler).getSandbox},
+	{Operation{http.MethodDelete, "/v1/sandboxes/{sandbox_id}"}, (*Handler).deleteSandbox},
+	{Operation{http.MethodPost, "/v1/sandboxes/{sandbox_id}/pause"}, (*Handler).pauseSandbox},
+	{Operation{http.MethodPost, "/v1/sandboxes/{sandbox_id}/resume"}, (*Handler).resumeSandbox},
 
-	{http.MethodPost, "/v1/sandboxes/{sandbox_id}/executions"},
-	{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions"},
-	{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}"},
-	{http.MethodPost, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel"},
-	{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}/events"},
+	{Operation{http.MethodPost, "/v1/sandboxes/{sandbox_id}/executions"}, (*Handler).startExecution},
+	{Operation{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions"}, (*Handler).listExecutions},
+	{Operation{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}"}, (*Handler).getExecution},
+	{Operation{http.MethodPost, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel"}, (*Handler).cancelExecution},
+	{Operation{http.MethodGet, "/v1/sandboxes/{sandbox_id}/executions/{execution_id}/events"}, (*Handler).streamEvents},
 
-	{http.MethodGet, "/v1/sandboxes/{sandbox_id}/files"},
-	{http.MethodPut, "/v1/sandboxes/{sandbox_id}/files"},
+	{Operation{http.MethodGet, "/v1/sandboxes/{sandbox_id}/files"}, (*Handler).readFile},
+	{Operation{http.MethodPut, "/v1/sandboxes/{sandbox_id}/files"}, (*Handler).writeFile},
 }
 
 // Routes returns the operations the server registers. Stage 0 freezes the
 // contract: every operation in api/openapi.yaml has an entry here, and a test
 // fails if the two sets differ in either direction.
 func Routes() []Operation {
-	return append([]Operation(nil), routes...)
+	ops := make([]Operation, len(routes))
+	for i, route := range routes {
+		ops[i] = route.Operation
+	}
+	return ops
 }
 
 // handleHealth is the liveness endpoint. It answers without touching the
@@ -60,7 +77,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 
 // routeKey names one operation. It is the string the mux registers and the
-// string handlerFor matches.
+// string a lookup uses.
 func routeKey(method, path string) string {
 	return method + " " + path
 }

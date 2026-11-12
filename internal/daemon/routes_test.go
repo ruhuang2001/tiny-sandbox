@@ -5,42 +5,34 @@ import (
 	"testing"
 )
 
-// TestEveryOperationResolvesToAHandler is the guard the route coverage test
-// cannot provide: a mux built with a fallback handler reports a matching
-// pattern for every listed route, so only resolving the table directly proves
-// each operation has a real handler.
-func TestEveryOperationResolvesToAHandler(t *testing.T) {
-	h := NewHandler(nil, "test-version")
-	for _, op := range routes {
-		handle, ok := h.handlerFor(op.Method, op.Path)
-		if !ok || handle == nil {
-			t.Errorf("%s has no handler", routeKey(op.Method, op.Path))
+// TestEveryRouteHasAHandler is the guard the route coverage test cannot
+// provide: a mux with a fallback handler reports a matching pattern for every
+// listed route, so only inspecting the table proves each entry is servable.
+func TestEveryRouteHasAHandler(t *testing.T) {
+	for _, route := range routes {
+		key := routeKey(route.Method, route.Path)
+		if route.handle == nil {
+			t.Errorf("%s has no handler", key)
+			continue
+		}
+		if route.handle == nil {
+			t.Errorf("%s bound to a nil handler", key)
 		}
 	}
 }
 
-// TestUnknownOperationHasNoHandler pins the negative side: the lookup itself
-// must report a miss rather than hand back some default, so the panic in
-// newMux is reachable.
-func TestUnknownOperationHasNoHandler(t *testing.T) {
-	h := NewHandler(nil, "test-version")
-	if handle, ok := h.handlerFor(http.MethodGet, "/v1/nope"); ok || handle != nil {
-		t.Fatalf("unknown operation resolved to %v, want a miss", handle)
-	}
-}
-
-// TestMissingHandlerPanicsAtBuildTime pins the failure mode for a route added
-// to the table without a case in handlerFor: construction panics, so the
-// server never starts with an operation it cannot serve. The old behaviour
-// answered 503 on the first request instead, which no test observed.
+// TestMissingHandlerPanicsAtBuildTime pins the failure mode for an entry added
+// to a table without a handler: construction panics, so the server never
+// starts with an operation it cannot serve. The old behaviour answered 503 on
+// the first request instead, which no test observed.
 func TestMissingHandlerPanicsAtBuildTime(t *testing.T) {
 	h := NewHandler(nil, "test-version")
 	defer func() {
 		if recover() == nil {
-			t.Fatal("buildMux accepted an operation with no handler; want a panic")
+			t.Fatal("newMux accepted a route with no handler; want a panic")
 		}
 	}()
-	newMux(h, []Operation{{http.MethodGet, "/v1/not-implemented"}})
+	newMux(h, []Route{{Operation: Operation{Method: http.MethodGet, Path: "/v1/not-implemented"}}})
 }
 
 // TestRouteTableHasNoDuplicates keeps the mux registration honest: a
@@ -48,11 +40,26 @@ func TestMissingHandlerPanicsAtBuildTime(t *testing.T) {
 // pair with different handlers would silently keep one of them.
 func TestRouteTableHasNoDuplicates(t *testing.T) {
 	seen := make(map[string]bool, len(routes))
-	for _, op := range routes {
-		key := routeKey(op.Method, op.Path)
+	for _, route := range routes {
+		key := routeKey(route.Method, route.Path)
 		if seen[key] {
 			t.Errorf("route %s is listed twice", key)
 		}
 		seen[key] = true
+	}
+}
+
+// TestRoutesReturnsACopy keeps callers from mutating the table through the
+// exported accessor.
+func TestRoutesReturnsACopy(t *testing.T) {
+	first := Routes()
+	if len(first) == 0 {
+		t.Fatal("route table is empty")
+	}
+	want := first[0]
+	first[0] = Operation{Method: http.MethodGet, Path: "/v1/mutated"}
+
+	if got := Routes()[0]; got != want {
+		t.Fatalf("Routes() returned the table itself: first entry is %v, want %v", got, want)
 	}
 }

@@ -27,11 +27,11 @@ type Handler struct {
 
 // NewHandler returns the server's HTTP handler over store.
 //
-// It panics when an operation in the route table has no handler. That is
-// deliberate: the alternative is a route that answers 503 on its first
-// request, which the route coverage test cannot see, because a mux with a
-// fallback handler still reports a matching pattern. A missing case is a
-// programming error and must fail at startup, not under load.
+// It panics when a route in the table has no handler. That is deliberate: the
+// alternative is a route that answers 503 on its first request, which the
+// route coverage test cannot see, because a mux with a fallback handler still
+// reports a matching pattern. A missing handler is a programming error and
+// must fail at startup, not under load.
 func NewHandler(store *Sandboxes, version string) *Handler {
 	h := &Handler{store: store, version: version}
 	h.mux = h.buildMux()
@@ -70,67 +70,28 @@ func (h *Handler) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) == 1
 }
 
-// buildMux turns the route table into a mux. Every operation must resolve to
-// a handler; a missing one panics rather than being served by a fallback.
+// buildMux turns the route table into a mux.
 func (h *Handler) buildMux() *http.ServeMux {
 	return newMux(h, routes)
 }
 
-// newMux registers ops on mux and panics if one of them has no handler. It is
-// a function of the table rather than of Handler alone so a test can pass a
-// table with an unknown operation and observe the panic.
-func newMux(h *Handler, ops []Operation) *http.ServeMux {
+// newMux registers table routes on a mux. An entry with no handler is a
+// programming error and panics here, at construction, rather than answering
+// 503 on its first request. It is a function of the table rather than of
+// Handler alone so a test can pass a hand-built table and observe the panic.
+func newMux(h *Handler, table []Route) *http.ServeMux {
 	mux := http.NewServeMux()
-	for _, op := range ops {
-		handle, ok := h.handlerFor(op.Method, op.Path)
-		if !ok {
-			panic("daemon: no handler for " + routeKey(op.Method, op.Path))
+	for _, route := range table {
+		key := routeKey(route.Method, route.Path)
+		if route.handle == nil {
+			panic("daemon: no handler for " + key)
 		}
-		mux.HandleFunc(routeKey(op.Method, op.Path), handle)
+		handle := route.handle
+		mux.HandleFunc(key, func(w http.ResponseWriter, r *http.Request) {
+			handle(h, w, r)
+		})
 	}
 	return mux
-}
-
-// handlerFor returns the handler for one contract operation, matching the
-// route table's exact method and path template. Path parameters are read with
-// Request.PathValue, so the handler does not depend on the router's internals.
-//
-// The second result is false when no handler exists. buildMux turns that into
-// a panic, which is the only correct answer: a route that cannot be served is
-// a build defect, and answering 503 would hide it until production traffic.
-func (h *Handler) handlerFor(method, path string) (http.HandlerFunc, bool) {
-	switch routeKey(method, path) {
-	case "GET /healthz":
-		return h.handleHealth, true
-	case "POST /v1/sandboxes":
-		return h.createSandbox, true
-	case "GET /v1/sandboxes":
-		return h.listSandboxes, true
-	case "GET /v1/sandboxes/{sandbox_id}":
-		return h.getSandbox, true
-	case "DELETE /v1/sandboxes/{sandbox_id}":
-		return h.deleteSandbox, true
-	case "POST /v1/sandboxes/{sandbox_id}/pause":
-		return h.pauseSandbox, true
-	case "POST /v1/sandboxes/{sandbox_id}/resume":
-		return h.resumeSandbox, true
-	case "POST /v1/sandboxes/{sandbox_id}/executions":
-		return h.startExecution, true
-	case "GET /v1/sandboxes/{sandbox_id}/executions":
-		return h.listExecutions, true
-	case "GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}":
-		return h.getExecution, true
-	case "POST /v1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel":
-		return h.cancelExecution, true
-	case "GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/events":
-		return h.streamEvents, true
-	case "GET /v1/sandboxes/{sandbox_id}/files":
-		return h.readFile, true
-	case "PUT /v1/sandboxes/{sandbox_id}/files":
-		return h.writeFile, true
-	default:
-		return nil, false
-	}
 }
 
 // ---------------------------------------------------------------- sandboxes
