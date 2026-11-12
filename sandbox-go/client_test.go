@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -226,6 +227,65 @@ func TestErrorMatchesSentinels(t *testing.T) {
 	}
 }
 
+func TestOutcomeSentinelsAreExclusive(t *testing.T) {
+	// An OOM kill typically exits 137. It must match ErrOOM and must not also
+	// match ErrNonZeroExit, or a caller branching on "my program has a bug"
+	// sees the wrong outcome and never checks the memory limit.
+	oomExit := 137
+	oom := ReasonOOM
+	err := outcomeError(&Execution{ExitCode: &oomExit, TerminationReason: &oom})
+	if !errors.Is(err, ErrOOM) {
+		t.Fatalf("err = %v, want ErrOOM", err)
+	}
+	if errors.Is(err, ErrNonZeroExit) {
+		t.Error("an OOM kill also matched ErrNonZeroExit")
+	}
+
+	// Same for the other reasoned outcomes, all of which can carry a
+	// non-zero exit code.
+	for _, tc := range []struct {
+		reason Reason
+		want   error
+	}{
+		{ReasonTimeout, ErrTimeout},
+		{ReasonCanceled, ErrCanceled},
+		{ReasonEvicted, ErrEvicted},
+	} {
+		code := 1
+		reason := tc.reason
+		got := outcomeError(&Execution{ExitCode: &code, TerminationReason: &reason})
+		if !errors.Is(got, tc.want) {
+			t.Errorf("%s: err = %v, want %v", tc.reason, got, tc.want)
+		}
+		if implementsIs(got, ErrNonZeroExit) {
+			t.Errorf("%s also matched ErrNonZeroExit", tc.reason)
+		}
+	}
+
+	// An ordinary non-zero exit matches only ErrNonZeroExit.
+	code := 3
+	exited := ReasonExited
+	plain := outcomeError(&Execution{ExitCode: &code, TerminationReason: &exited})
+	if !errors.Is(plain, ErrNonZeroExit) {
+		t.Fatalf("err = %v, want ErrNonZeroExit", plain)
+	}
+	for _, other := range []error{ErrOOM, ErrTimeout, ErrCanceled, ErrEvicted} {
+		if implementsIs(plain, other) {
+			t.Errorf("a plain non-zero exit also matched %v", other)
+		}
+	}
+
+	// The timeout message must not claim the sandbox expired: an execution
+	// timeout normally leaves the sandbox running.
+	timeout := ReasonTimeout
+	var sdkErr *Error
+	if errors.As(outcomeError(&Execution{ExitCode: &code, TerminationReason: &timeout}), &sdkErr) {
+		if strings.Contains(sdkErr.Message, "lifetime") {
+			t.Errorf("timeout message still claims a lifetime expiry: %q", sdkErr.Message)
+		}
+	}
+}
+
 func TestOutcomeErrorKeepsOutput(t *testing.T) {
 	code := 2
 	reason := ReasonOOM
@@ -328,4 +388,13 @@ func TestTimeRoundTrips(t *testing.T) {
 // jsonUnmarshal decodes test fixture bytes.
 func jsonUnmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
+}
+
+// implementsIs reports whether err matches target through the SDK's own Is
+// method, rather than the errors.Is equality fallback. Every outcome here is an
+// *Error, so the distinction matters: an *Error that declines a target must not
+// match it by message text.
+func implementsIs(err, target error) bool {
+	var sdkErr *Error
+	return errors.As(err, &sdkErr) && sdkErr.Is(target)
 }

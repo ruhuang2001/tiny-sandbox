@@ -368,7 +368,7 @@ type fakeTimeout struct{}
 func (*fakeTimeout) Error() string { return "timeout" }
 
 func (e *fakeTimeout) Is(target error) bool {
-	return target.Error() == "sandbox: sandbox lifetime expired"
+	return target.Error() == "sandbox: execution timed out"
 }
 
 type fakeEvicted struct{}

@@ -102,7 +102,9 @@ The examples request cleanup with `--rm`. If cleanup failed, run
 - If `docker info` fails, start Docker and check access to its daemon.
 - If `doctor` fails, follow its printed hint and check `SANDBOX_DOMAIN`.
 - If port 8080 is occupied, start `./sandboxd -addr 127.0.0.1:8081` and set
-  `SANDBOX_DOMAIN=http://127.0.0.1:8081` in the client terminal.
+  `SANDBOX_DOMAIN=http://127.0.0.1:8081` in the client terminal. The container
+  owner label follows `-addr` unless you pass `-owner`; pin it when the address
+  changes between runs.
 - If authentication is enabled, use the same `SANDBOX_API_KEY` in both terminals.
 
 ## Build from source

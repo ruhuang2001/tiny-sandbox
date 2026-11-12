@@ -135,7 +135,7 @@ from JSON.
 | exited | Normal exit with status 0 | Use the output or continue the task |
 | nonzero_exit | Nonzero exit status | Read stderr and correct the code |
 | oom | Killed for exceeding the memory limit | Reduce memory use or process data in chunks |
-| timeout | Sandbox lifetime expired | Optimize code or adjust the lifetime |
+| timeout | A deadline expired: the sandbox lifetime, or the execution's own timeout | Optimize code or adjust the lifetime or execution timeout |
 | canceled | Execution was canceled | Let the application decide whether to continue |
 | evicted | Container was stopped externally | Check the environment and recreate the sandbox if appropriate |
 | invalid_input | Code is empty | Supply code |

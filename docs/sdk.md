@@ -90,8 +90,8 @@ func (e *Error) Is(target error) bool
 func (e *Error) Retryable() bool
 
 var (
-    ErrNonZeroExit       // exited with a nonzero code
-    ErrTimeout           // termination_reason "timeout"
+    ErrNonZeroExit       // termination_reason "exited" with a nonzero exit code
+    ErrTimeout           // termination_reason "timeout": the sandbox lifetime, or the execution's own deadline
     ErrCanceled          // canceled outcome or an accepted SDK cancellation response; inspect execution state
     ErrOOM               // termination_reason "oom"
     ErrEvicted           // termination_reason "evicted"
@@ -99,6 +99,8 @@ var (
     ErrNotFound, ErrUnauthorized, ErrBusy, ErrInvalidState
 )
 ```
+
+The sentinels are mutually exclusive. An execution matches the sentinel for its termination reason and nothing else; `ErrNonZeroExit` therefore means the command exited on its own with a non-zero status, never an OOM kill, timeout, cancellation, or eviction that also happened to report a non-zero code. `ErrTimeout` does not distinguish the two deadlines that produce it: an execution timeout normally leaves the sandbox running, while a lifetime timeout with action `kill` removes it, so inspect the `Sandbox` when that difference matters.
 
 `errors.Is(err, sandbox.ErrOOM)` must work on every error the SDK returns for that outcome. When a final execution is available, `Error.Execution` holds its retained `stdout`, `stderr`, and `exit_code`. Check `output_truncated` before treating output as complete. Transport or start failures may return no execution; an unconfirmed cancellation may carry only IDs.
 

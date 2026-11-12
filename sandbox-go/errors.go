@@ -8,9 +8,14 @@ import (
 
 // Sentinel errors. errors.Is matches these on every error the SDK returns for
 // the corresponding outcome, including errors that also carry an Execution.
+//
+// The sentinels are mutually exclusive: an execution that ended for a reason
+// matches that reason's sentinel and nothing else. ErrNonZeroExit therefore
+// covers only an ordinary exit with a non-zero code, not an OOM kill that also
+// happened to exit non-zero.
 var (
 	ErrNonZeroExit       = errors.New("sandbox: command exited with a nonzero code")
-	ErrTimeout           = errors.New("sandbox: sandbox lifetime expired")
+	ErrTimeout           = errors.New("sandbox: execution timed out")
 	ErrCanceled          = errors.New("sandbox: execution canceled")
 	ErrOOM               = errors.New("sandbox: killed by the kernel OOM killer")
 	ErrEvicted           = errors.New("sandbox: container was stopped externally")
@@ -49,8 +54,8 @@ func (e *Error) Error() string {
 func (e *Error) Unwrap() error { return e.Cause }
 
 // Is matches sentinel values by the outcome and status this error represents.
-// An execution outcome matches both its termination reason and, for a nonzero
-// exit, ErrNonZeroExit.
+// An execution outcome matches its termination reason or, for an ordinary
+// non-zero exit, ErrNonZeroExit; it never matches both.
 func (e *Error) Is(target error) bool {
 	switch target {
 	case ErrNotFound:
@@ -72,8 +77,18 @@ func (e *Error) Is(target error) bool {
 	case ErrEvicted:
 		return e.Code == string(ReasonEvicted)
 	case ErrNonZeroExit:
-		return e.Code == "nonzero_exit" ||
-			(e.Execution != nil && e.Execution.ExitCode != nil && *e.Execution.ExitCode != 0)
+		if e.Code == "nonzero_exit" {
+			return true
+		}
+		// An execution that ended for its own reason is that outcome, whatever
+		// exit code the runtime reported. An OOM kill exits 137, and reporting
+		// it as an ordinary non-zero exit sends a caller looking for a bug in
+		// its own program.
+		return e.Execution != nil &&
+			e.Execution.TerminationReason != nil &&
+			*e.Execution.TerminationReason == ReasonExited &&
+			e.Execution.ExitCode != nil &&
+			*e.Execution.ExitCode != 0
 	default:
 		return false
 	}
@@ -104,7 +119,11 @@ func outcomeError(ex *Execution) error {
 	case ReasonCanceled:
 		return &Error{Code: string(ReasonCanceled), Message: "sandbox: execution canceled", Execution: ex}
 	case ReasonTimeout:
-		return &Error{Code: string(ReasonTimeout), Message: "sandbox: sandbox lifetime expired", Execution: ex}
+		// One reason covers two deadlines: the sandbox lifetime and the
+		// execution's own timeout_seconds. Only the lifetime kills the sandbox,
+		// so the message must not claim the sandbox expired when a command
+		// simply ran too long.
+		return &Error{Code: string(ReasonTimeout), Message: "sandbox: execution timed out", Execution: ex}
 	case ReasonOOM:
 		return &Error{Code: string(ReasonOOM), Message: "sandbox: killed by the kernel OOM killer", Execution: ex}
 	case ReasonEvicted:

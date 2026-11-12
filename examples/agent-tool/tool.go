@@ -183,7 +183,7 @@ func failure(err error) Result {
 	case errors.Is(err, sandbox.ErrTimeout):
 		return Result{
 			IsError: true, Outcome: "timeout",
-			Message: "the sandbox lifetime expired before the program finished",
+			Message: "the run timed out before the program finished",
 			Hint:    "raise timeout_seconds or make the program faster",
 		}
 	case errors.Is(err, sandbox.ErrCanceled):

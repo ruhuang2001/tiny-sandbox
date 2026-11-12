@@ -573,8 +573,8 @@ components:
             message: request body exceeds 1048576 bytes
     RateLimited:
       description: >-
-        429 rate_limited. Reserved: the reference server does not emit it, but
-        clients must handle it.
+        429 rate_limited: the create would exceed the server's live-sandbox
+        limit. Retryable after deleting a sandbox.
       headers:
         Retry-After:
           description: Seconds to wait before retrying.
