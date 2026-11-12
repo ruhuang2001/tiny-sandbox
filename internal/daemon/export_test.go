@@ -46,3 +46,21 @@ func (s *Sandboxes) ScheduleRemovalCountForTest() int {
 	defer s.retryMu.Unlock()
 	return len(s.retryIDs)
 }
+
+// RetentionForTest runs one retention pass, which the reaper otherwise runs on
+// its own beat, so a test can assert the bounds without waiting for a tick.
+func (s *Sandboxes) RetentionForTest() {
+	s.prune()
+}
+
+// RetainedBytesForTest reports the output the store holds.
+func (s *Sandboxes) RetainedBytesForTest() int {
+	total := 0
+	for _, sb := range s.sandboxesInCreationOrder() {
+		if sb.mu.TryLock() {
+			total += sb.retainedBytesLocked()
+			sb.mu.Unlock()
+		}
+	}
+	return total
+}

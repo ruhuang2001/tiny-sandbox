@@ -50,6 +50,20 @@ func WithCancelGrace(d time.Duration) Option { return func(s *Sandboxes) { s.can
 // removes the container.
 func WithCancelDeadline(d time.Duration) Option { return func(s *Sandboxes) { s.cancelDeadline = d } }
 
+// WithMaxSandboxes sets how many live sandboxes the store accepts. A create
+// beyond it is rate_limited.
+func WithMaxSandboxes(n int) Option { return func(s *Sandboxes) { s.maxSandboxes = n } }
+
+// WithMaxRetainedSandboxes sets how many killed records are kept.
+func WithMaxRetainedSandboxes(n int) Option {
+	return func(s *Sandboxes) { s.maxRetainedSandboxes = n }
+}
+
+// WithMaxRetainedOutputBytes sets the total output budget across sandboxes.
+func WithMaxRetainedOutputBytes(n int) Option {
+	return func(s *Sandboxes) { s.maxRetainedOutput = n }
+}
+
 // OwnerLabelKey is the label that ties a container to the server instance
 // that created it.
 const OwnerLabelKey = "tiny-sandbox.owner"
@@ -88,9 +102,17 @@ type Sandboxes struct {
 	cancelGrace     time.Duration
 	cancelDeadline  time.Duration
 
+	maxSandboxes         int
+	maxRetainedSandboxes int
+	maxRetainedOutput    int
+
 	mu    sync.Mutex
 	byID  map[string]*sandbox
 	order []*sandbox // creation order, for newest-first listings
+	// live counts sandboxes that are not killed: every one of them holds a
+	// container. Admission checks it, so an agent loop that never deletes cannot
+	// exhaust the host one sandbox at a time.
+	live int
 
 	// retryMu guards retryIDs: containers the runtime would not remove. It is
 	// a separate lock so a retry pass never waits on the store lock, and the
@@ -108,14 +130,17 @@ const removalPassBudget = 2 * time.Second
 // New returns Sandboxes backed by backend.
 func New(backend Backend, opts ...Option) *Sandboxes {
 	s := &Sandboxes{
-		backend:         backend,
-		clock:           realClock{},
-		cleanupInterval: time.Second,
-		cancelGrace:     2 * time.Second,
-		cancelDeadline:  10 * time.Second,
-		sleep:           sleepContext,
-		byID:            make(map[string]*sandbox),
-		retryIDs:        make(map[string]struct{}),
+		backend:              backend,
+		clock:                realClock{},
+		cleanupInterval:      time.Second,
+		cancelGrace:          2 * time.Second,
+		cancelDeadline:       10 * time.Second,
+		maxSandboxes:         MaxSandboxes,
+		maxRetainedSandboxes: MaxRetainedSandboxes,
+		maxRetainedOutput:    MaxRetainedOutputBytes,
+		sleep:                sleepContext,
+		byID:                 make(map[string]*sandbox),
+		retryIDs:             make(map[string]struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -128,6 +153,15 @@ func New(backend Backend, opts ...Option) *Sandboxes {
 	}
 	if s.cancelDeadline <= s.cancelGrace {
 		s.cancelDeadline = 10 * time.Second
+	}
+	if s.maxSandboxes <= 0 {
+		s.maxSandboxes = MaxSandboxes
+	}
+	if s.maxRetainedSandboxes <= 0 {
+		s.maxRetainedSandboxes = MaxRetainedSandboxes
+	}
+	if s.maxRetainedOutput <= 0 {
+		s.maxRetainedOutput = MaxRetainedOutputBytes
 	}
 	return s
 }
@@ -156,7 +190,10 @@ type sandbox struct {
 	opts      sandboxOptions
 	createdAt time.Time
 
-	state      State
+	state State
+	// released records that this sandbox gave back its live-sandbox slot, so a
+	// kill that races a failed create cannot free the same slot twice.
+	released   bool
 	killReason *KillReason
 	// expiresAt is non-nil only while a lifetime deadline is armed: for a
 	// kill-action sandbox in any live state, and for a pause-action sandbox
@@ -210,6 +247,9 @@ func (s *Sandboxes) Create(ctx context.Context, req CreateRequest) (Sandbox, err
 	if err != nil {
 		return Sandbox{}, err
 	}
+	if err := s.reserve(); err != nil {
+		return Sandbox{}, err
+	}
 
 	now := s.now()
 	id := newID("sbx_")
@@ -242,6 +282,15 @@ func (s *Sandboxes) Create(ctx context.Context, req CreateRequest) (Sandbox, err
 		// way to be sure. A failed remove is left for startup cleanup by
 		// label.
 		_ = s.backend.Remove(ctx, containerID)
+		// The reservation from reserve() never became a sandbox record. A kill
+		// that landed while the container was being created already released
+		// it, so the sandbox decides whether this call owns the slot.
+		sb.mu.Lock()
+		released := sb.released
+		sb.mu.Unlock()
+		if !released {
+			s.release()
+		}
 		s.forget(sb)
 		return Sandbox{}, backendError(err)
 	}
@@ -260,6 +309,29 @@ func (s *Sandboxes) Create(ctx context.Context, req CreateRequest) (Sandbox, err
 	sb.armLifetimeLocked(s.now())
 	sb.mu.Unlock()
 	return sb.snapshot(), nil
+}
+
+// reserve claims a live-sandbox slot, or reports rate_limited when the store
+// is full. Live sandboxes hold containers, so the bound is what keeps an
+// agent that never deletes from exhausting the host. The reservation is taken
+// before the container exists and released on every failure path.
+func (s *Sandboxes) reserve() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.live >= s.maxSandboxes {
+		return errorf(CodeRateLimited,
+			"%d live sandboxes are already running; delete one before creating another", s.live)
+	}
+	s.live++
+	return nil
+}
+
+// release gives back a live-sandbox slot. It is called when a sandbox becomes
+// killed, by every path that does so: a delete, a timeout, and an eviction.
+func (s *Sandboxes) release() {
+	s.mu.Lock()
+	s.live--
+	s.mu.Unlock()
 }
 
 // forget removes a sandbox that never started.
@@ -437,6 +509,11 @@ func (s *Sandboxes) killLocked(sb *sandbox, reason KillReason) {
 	r := reason
 	sb.killReason = &r
 	sb.expiresAt = nil
+	// A killed sandbox holds no container, so its slot is free immediately.
+	if !sb.released {
+		sb.released = true
+		s.release()
+	}
 
 	ex := sb.running
 	if ex == nil {
@@ -474,6 +551,55 @@ func (s *Sandboxes) terminateLocked(ctx context.Context, sb *sandbox, reason Kil
 		s.scheduleRemoval(sb.container)
 	}
 }
+
+// ---------------------------------------------------------------- shutdown
+
+// Shutdown removes every container this process created and drops all state.
+//
+// Without it, shutdown leaves running containers behind and the only way back
+// is the next process's owner-label cleanup. That cleanup keys on the listen
+// address, so a restart on a different port finds nothing and the containers
+// become orphans. Removal is bounded as a whole, because a shutdown that waits
+// on a stuck runtime is not a shutdown.
+func (s *Sandboxes) Shutdown(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownBudget)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, shutdownWorkers)
+	for _, sb := range s.sandboxesInCreationOrder() {
+		sb.mu.Lock()
+		container := sb.container
+		sb.mu.Unlock()
+		if container == "" {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// ErrNotFound is success: the container is gone either way.
+			_ = s.backend.Remove(ctx, container)
+		}()
+	}
+	wg.Wait()
+
+	s.mu.Lock()
+	s.byID = make(map[string]*sandbox)
+	s.order = nil
+	s.live = 0
+	s.mu.Unlock()
+}
+
+const (
+	// shutdownBudget bounds the whole container sweep.
+	shutdownBudget = 10 * time.Second
+	// shutdownWorkers bounds how many removals run at once, so a large store
+	// finishes well inside the budget without opening one connection per
+	// container.
+	shutdownWorkers = 8
+)
 
 // ---------------------------------------------------------------- helpers
 

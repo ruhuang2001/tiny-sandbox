@@ -206,14 +206,16 @@ func (b *Backend) Exec(ctx context.Context, id string, command []string) (daemon
 	c.proc = p
 
 	if streamer, ok := b.Streamers[command[0]]; ok {
-		go p.runStreamer(ctx, streamer)
+		go p.runStreamer(context.WithoutCancel(ctx), streamer)
 		return p, nil
 	}
 	program := b.Default
 	if fn, ok := b.Programs[command[0]]; ok {
 		program = fn
 	}
-	go p.run(ctx, program, command[1:])
+	// The program outlives the request that started it, as it does in the
+	// Docker backend: the daemon bounds the start handshake, not the process.
+	go p.run(context.WithoutCancel(ctx), program, command[1:])
 	return p, nil
 }
 

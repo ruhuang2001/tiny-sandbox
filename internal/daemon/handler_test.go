@@ -454,3 +454,66 @@ func TestHandlerNotFound(t *testing.T) {
 		t.Fatalf("get missing = %d %s", resp.Status, h.errorCode(resp))
 	}
 }
+
+// TestHandlerShutdownEndsStreams pins graceful shutdown: http.Server.Shutdown
+// waits for handlers but does not cancel their contexts, so a live event stream
+// would hold the shutdown open until its deadline. The shutdown signal ends it.
+func TestHandlerShutdownEndsStreams(t *testing.T) {
+	be := membackend.New()
+	be.Programs["block"] = func(ctx context.Context, _ []string) (string, string, int) {
+		<-ctx.Done()
+		return "", "", 137
+	}
+	// A command that never finishes on its own, so the stream stays open.
+	shuttingDown := make(chan struct{})
+	srv := httptest.NewServer(daemon.NewHandler(daemon.New(be), "test-version").WithShutdown(shuttingDown))
+	t.Cleanup(srv.Close)
+
+	sb := postJSON[daemon.Sandbox](t, srv, "/v1/sandboxes", `{"timeout_seconds":0}`)
+	ex := postJSON[daemon.Execution](t, srv,
+		"/v1/sandboxes/"+sb.ID+"/executions", `{"command":["block"]}`)
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		srv.URL+"/v1/sandboxes/"+sb.ID+"/executions/"+ex.ID+"/events", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", resp.StatusCode)
+	}
+
+	close(shuttingDown)
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream survived the shutdown signal")
+	}
+}
+
+// postJSON POSTs body and decodes the response into T.
+func postJSON[T any](t *testing.T, srv *httptest.Server, path, body string) T {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("%s: request: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out T
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("%s: decode: %v", path, err)
+	}
+	return out
+}

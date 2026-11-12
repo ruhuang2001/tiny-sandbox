@@ -87,7 +87,9 @@ func (ex *execution) finish(at time.Time, exitCode int, outcome ExecOutcome) boo
 	reason := outcome.Reason
 	ex.reason = &reason
 
-	stdout, stderr, truncated := ex.log.output()
+	// The terminal record is stored without output: the log's events are the
+	// only copy, and the delivery path assembles it for the client. Storing it
+	// here as well would double the memory each execution keeps.
 	ex.log.appendComplete(Execution{
 		ID:                ex.id,
 		SandboxID:         ex.sandboxID,
@@ -95,14 +97,16 @@ func (ex *execution) finish(at time.Time, exitCode int, outcome ExecOutcome) boo
 		State:             ExecCompleted,
 		ExitCode:          ex.exitCode,
 		TerminationReason: ex.reason,
-		Stdout:            string(stdout),
-		Stderr:            string(stderr),
-		OutputTruncated:   truncated,
 		StartedAt:         ex.startedAt,
 		FinishedAt:        ex.finished,
 	})
 	close(ex.done)
 	return true
+}
+
+// retained reports how many bytes of output the execution keeps.
+func (ex *execution) retained() int {
+	return ex.log.retainedBytes()
 }
 
 // snapshot returns the contract view with retained output.
@@ -233,7 +237,14 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 			sb.id, oomErr)
 	}
 
-	proc, err := s.backend.Exec(context.WithoutCancel(ctx), sb.container, req.Command)
+	// The start call is bounded so a hung runtime cannot hold sb.mu forever:
+	// the reaper skips a busy sandbox, so a permanent lock would mean its
+	// timeouts never fire again. The bound covers the start handshake only;
+	// the process itself outlives this context, which the backend detaches
+	// from the request.
+	startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), BackendCallTimeout)
+	proc, err := s.backend.Exec(startCtx, sb.container, req.Command)
+	cancel()
 	if err != nil {
 		sb.mu.Unlock()
 		return Execution{}, false, backendError(err)
@@ -274,12 +285,17 @@ func (s *Sandboxes) StartExecution(ctx context.Context, sandboxID string, req Ex
 // readOOMBaseline returns the cgroup oom_kill counter, retrying once. A
 // failed read is reported to the caller, which records -1: the classifier then
 // skips the delta check rather than guess.
+//
+// Both attempts share one bounded context, so a runtime that never answers
+// cannot hold the sandbox lock for longer than BackendCallTimeout.
 func (s *Sandboxes) readOOMBaseline(ctx context.Context, containerID string) (int64, error) {
-	baseline, err := s.backend.OOMKillCount(ctx, containerID)
+	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), BackendCallTimeout)
+	defer cancel()
+	baseline, err := s.backend.OOMKillCount(callCtx, containerID)
 	if err == nil {
 		return baseline, nil
 	}
-	baseline, retryErr := s.backend.OOMKillCount(ctx, containerID)
+	baseline, retryErr := s.backend.OOMKillCount(callCtx, containerID)
 	if retryErr != nil {
 		return -1, retryErr
 	}

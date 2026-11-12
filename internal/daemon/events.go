@@ -38,6 +38,12 @@ type Event struct {
 // its terminal events. It is the single source of truth for both the stream
 // and the retained stdout/stderr, so a replay from ID 0 reproduces them.
 //
+// The events are the only copy of the output. The retained stdout and stderr a
+// caller reads are assembled from them on demand, which keeps one execution at
+// roughly MaxOutputBytes instead of two or three times that. Assembling costs a
+// pass over the log; a snapshot does it once, and the runner writes it once into
+// the complete event.
+//
 // Bounds come from api.md: at most MaxOutputBytes of retained output, at most
 // MaxOutputEvents output events, and at most MaxEventDataBytes per chunk. Once
 // either bound is hit, the log appends one truncated event and discards all
@@ -46,15 +52,12 @@ type eventLog struct {
 	mu      sync.Mutex
 	changed chan struct{} // closed and replaced on every append
 
-	events        []Event
-	nextID        uint64
-	retainedBytes int
-	outputEvents  int
-	truncated     bool
-	complete      bool
-
-	stdout []byte
-	stderr []byte
+	events       []Event
+	nextID       uint64
+	retained     int
+	outputEvents int
+	truncated    bool
+	complete     bool
 }
 
 func newEventLog() *eventLog {
@@ -94,19 +97,14 @@ func (l *eventLog) appendOutput(kind EventType, chunk []byte) {
 				n = cut
 			}
 		}
-		if l.outputEvents >= MaxOutputEvents || l.retainedBytes+n > MaxOutputBytes {
+		if l.outputEvents >= MaxOutputEvents || l.retained+n > MaxOutputBytes {
 			l.truncateLocked()
 			return
 		}
 		data := append([]byte(nil), chunk[:n]...)
 		l.appendLocked(Event{Type: kind, Data: data})
 		l.outputEvents++
-		l.retainedBytes += n
-		if kind == EventStdout {
-			l.stdout = append(l.stdout, data...)
-		} else {
-			l.stderr = append(l.stderr, data...)
-		}
+		l.retained += n
 		chunk = chunk[n:]
 	}
 }
@@ -180,6 +178,16 @@ func (l *eventLog) eventsAfterLocked(after uint64) ([]Event, bool) {
 		i = len(l.events)
 	}
 	events := append([]Event(nil), l.events[i:]...)
+	// The log stores no second copy of the output: the complete event carries
+	// the terminal record without it, and the copy a client sees is assembled
+	// here, once per delivery. Rebuilding it costs one pass over at most
+	// MaxOutputEvents events.
+	if n := len(events); n > 0 && events[n-1].Type == EventComplete && events[n-1].Execution != nil {
+		stdout, stderr, truncated := l.outputLocked()
+		ex := *events[n-1].Execution
+		ex.Stdout, ex.Stderr, ex.OutputTruncated = string(stdout), string(stderr), truncated
+		events[n-1].Execution = &ex
+	}
 	// done means "the complete event was delivered in this batch": the log is
 	// complete and this batch runs to the end of it. Returning done only when
 	// nothing remained would make the handler wait one ping interval after
@@ -214,13 +222,34 @@ func (l *eventLog) truncatedOutput() bool {
 	return l.truncated
 }
 
+// retainedBytes reports how many bytes of output the log holds.
+func (l *eventLog) retainedBytes() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.retained
+}
+
 // output returns the retained stdout and stderr and whether output was
 // truncated. It copies, so callers that only need the flag use
 // truncatedOutput; a listing does.
 func (l *eventLog) output() (stdout, stderr []byte, truncated bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return append([]byte(nil), l.stdout...), append([]byte(nil), l.stderr...), l.truncated
+	return l.outputLocked()
+}
+
+// outputLocked assembles the retained output from the events, which are its
+// only copy. Callers hold l.mu.
+func (l *eventLog) outputLocked() (stdout, stderr []byte, truncated bool) {
+	for _, ev := range l.events {
+		switch ev.Type {
+		case EventStdout:
+			stdout = append(stdout, ev.Data...)
+		case EventStderr:
+			stderr = append(stderr, ev.Data...)
+		}
+	}
+	return stdout, stderr, l.truncated
 }
 
 // lastEventID returns the ID of the newest event, 0 when there is none.

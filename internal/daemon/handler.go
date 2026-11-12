@@ -22,7 +22,12 @@ type Handler struct {
 	store   *Sandboxes
 	version string
 	apiKey  string
-	mux     *http.ServeMux
+	// shuttingDown is closed when the server begins a graceful shutdown. An
+	// event stream would otherwise keep its handler alive until the shutdown
+	// deadline expires, and http.Server.Shutdown does not cancel request
+	// contexts, so the stream is the one handler that needs to be told.
+	shuttingDown <-chan struct{}
+	mux          *http.ServeMux
 }
 
 // NewHandler returns the server's HTTP handler over store.
@@ -36,6 +41,15 @@ func NewHandler(store *Sandboxes, version string) *Handler {
 // public, as the contract says.
 func (h *Handler) WithAPIKey(key string) *Handler {
 	h.apiKey = key
+	return h
+}
+
+// WithShutdown makes event streams end when the channel closes, so a graceful
+// shutdown can drain them instead of waiting out its deadline. A stream that
+// ends this way is not a failure: the execution keeps running until the store's
+// own shutdown removes its container.
+func (h *Handler) WithShutdown(done <-chan struct{}) *Handler {
+	h.shuttingDown = done
 	return h
 }
 
@@ -299,6 +313,22 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer stream.Close()
 
+	// The stream ends when the client goes away or the server begins to shut
+	// down. http.Server.Shutdown does not cancel request contexts, so without
+	// the second arm this handler blocks until the shutdown deadline and the
+	// container it was streaming outlives the process.
+	streamCtx, stopStream := context.WithCancel(r.Context())
+	defer stopStream()
+	if h.shuttingDown != nil {
+		go func() {
+			select {
+			case <-h.shuttingDown:
+				stopStream()
+			case <-streamCtx.Done():
+			}
+		}()
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, string(CodeInternal), "streaming is not supported")
@@ -349,7 +379,7 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-pingDone:
 				return
-			case <-r.Context().Done():
+			case <-streamCtx.Done():
 				return
 			case <-ticker.C:
 				if err := write([]byte(": ping\n\n")); err != nil {
@@ -360,7 +390,7 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		events, done, err := stream.Next(r.Context())
+		events, done, err := stream.Next(streamCtx)
 		if err != nil {
 			return
 		}

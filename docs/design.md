@@ -265,7 +265,7 @@ Implementation: [start recovery](../sandbox-go/exec.go),
 | Reason | Meaning |
 |---|---|
 | `exited` | the process exited on its own, with any exit code |
-| `timeout` | the sandbox lifetime expired |
+| `timeout` | the server ended the command because a deadline expired: the sandbox lifetime with action `kill`, or the execution's own `timeout_seconds` |
 | `canceled` | an explicit cancel request |
 | `oom` | the kernel OOM killer stopped the command |
 | `evicted` | the container disappeared or was stopped externally |
@@ -302,7 +302,16 @@ cleanup behavior when the runtime fails.
 
 ### Server state
 
-State lives in memory. On startup, the server attempts to remove containers carrying its own owner label (`tiny-sandbox.owner=<listen address>`). Shutdown stops the HTTP server but does not itself remove those containers; startup cleanup depends on reusing the same listen address. The end-to-end harness performs its own container cleanup. Durable state and runtime reconciliation are described in [future directions](future.md).
+State lives in memory, and it is bounded on four axes so a long-running agent cannot grow it without limit:
+
+- live sandboxes (`MaxSandboxes`): a create beyond it is `rate_limited`, so an agent loop that never deletes is refused rather than allowed to exhaust the host;
+- killed records (`MaxRetainedSandboxes`): dropped oldest first, because they exist for idempotent delete and history, not for their own sake;
+- retained output, per execution (`MaxOutputBytes`) and in total (`MaxRetainedOutputBytes`): the total exists because the per-execution bound multiplies by history and by sandbox count;
+- executions per sandbox (`MaxExecutionsPerSandbox`).
+
+The event log is the only copy of an execution's output; `stdout` and `stderr` are assembled from it when a client asks, which keeps one execution near one retained byte per byte of output instead of three.
+
+On startup, the server attempts to remove containers carrying its own owner label (`tiny-sandbox.owner=<owner>`, the `-owner` flag, defaulting to the listen address). An ordinary stop closes open streams, drains the HTTP server, and then removes every container the process created, so containers do not outlive a clean shutdown; startup cleanup covers a crash. Pin `-owner` when the listen address can change, or a restart on a different port will not see the previous process's containers. The end-to-end harness performs its own container cleanup. Durable state and runtime reconciliation are described in [future directions](future.md).
 
 ## Verification
 
@@ -312,7 +321,7 @@ Three layers, each answering a different question:
 |---|---|---|
 | Unit | `internal/daemon` with the in-memory backend; `dockerapi` parsers; SDK SSE decoding | Is the semantics right: transition table, classification precedence, reconnect de-duplication, backoff bounds |
 | Contract | `httptest` with injected faults (reset connections, 429, 5xx, half-written bodies) and a fake Docker daemon on a unix socket | Is the behaviour right when transport breaks: retry boundaries, unconfirmed cancel, truncated stream |
-| End-to-end | `scripts/e2e.sh` against real Docker | Is it right in reality: pause retains memory, OOM is distinguished from `kill -9`, cancellation kills the process tree |
+| End-to-end | `scripts/e2e.sh` against real Docker | Is it right in reality: pause retains memory, OOM is distinguished from `kill -9`, cancellation kills the process tree, a clean stop sweeps its containers, and a `kill -9` leaves an orphan the next start reclaims |
 
 Rules:
 
@@ -350,12 +359,14 @@ Recorded because earlier builds hit them, not as hypotheticals:
 1. **137 is not OOM.** Order: intent, cgroup `oom_kill` delta, container liveness, exit code. Handle the container-record race explicitly.
 2. **The cancellation gap.** Between "start accepted" and "execution ID received" the client does not know whether work exists. Recover with the same idempotency key; never report success silently.
 3. **The CLI bypass.** Any CLI path that talks HTTP directly skips SDK recovery logic. Restrict direct HTTP to the health probe.
-4. **Unbounded server memory.** Output retention, event count, execution history, and upload size all need contract-level limits; a single `yes` otherwise exhausts the daemon. History is capped at 200 executions per sandbox; the evicted record and its idempotency key go together.
+4. **Unbounded server memory.** Output retention, event count, execution history, removed sandbox records, and upload size all need contract-level limits; a single `yes` otherwise exhausts the daemon. Every per-item bound must also have a total: 200 executions of 1 MiB per sandbox is 200 MiB per sandbox. History and idempotency keys are dropped together, and a killed record is dropped whole rather than kept forever.
 5. **A chunk boundary is a byte boundary, not a character boundary.** Output events are JSON strings encoded one at a time, so a cut inside a UTF-8 sequence becomes two U+FFFD and the bytes are gone. The pump carries an incomplete trailing rune into the next read, and the splitter backs up to a rune boundary. A test pins it.
 6. **Cleanup must not inherit the caller's deadline.** The cancel escalation and container removal run on `context.WithoutCancel` with their own bounds. A client that gives up on the request would otherwise skip SIGTERM's grace and destroy the sandbox.
 7. **A background reader must be joined.** The SSE ping goroutine writes to the response writer; the handler waits for it before returning, because net/http reuses that writer for the next request on the connection.
-8. **Pause must be measured, not asserted.** Prove it with a counter that advances across pause and resume, not with the state field.
-9. **Documentation bloat.** Evidence goes in `artifacts/`; prose stays readable.
+8. **A backend call must not be unbounded under a lock.** The reaper skips a sandbox whose lock is held, so a runtime call that never returns under `sb.mu` would disable that sandbox's timeouts permanently. Start-execution calls and the OOM baseline read are bounded by `BackendCallTimeout`; the process still outlives them.
+9. **Shutdown needs to tell streams.** `http.Server.Shutdown` waits for handlers but does not cancel their contexts, so an open SSE stream would hold the shutdown until its deadline and the container would outlive the process. The handler ends streams when the shutdown signal closes, and the store then removes every container it created.
+10. **Pause must be measured, not asserted.** Prove it with a counter that advances across pause and resume, not with the state field.
+11. **Documentation bloat.** Evidence goes in `artifacts/`; prose stays readable.
 
 ## Further reading
 

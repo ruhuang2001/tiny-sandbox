@@ -28,7 +28,7 @@ unknown paths or unsupported methods may use plain text:
 | 409 | `busy` | the sandbox already has a running execution | no |
 | 409 | `idempotency_conflict` | idempotency key reused with a different command | no |
 | 413 | `payload_too_large` | JSON request body or file upload exceeds a limit | no |
-| 429 | `rate_limited` | reserved; the reference server does not emit it, clients must handle it | yes |
+| 429 | `rate_limited` | a create would exceed the live-sandbox limit; see [limits](#limits) | yes |
 | 500 | `internal` | unexpected server error | yes |
 | 502 | `backend_error` | the container runtime failed | yes |
 | 503 | `unavailable` | server shutting down or not ready | yes |
@@ -181,7 +181,7 @@ Request (all fields optional):
 
 ### `GET /v1/sandboxes`
 
-`200 {"sandboxes": [Sandbox, ...]}`, newest first. Killed sandboxes are included until the server restarts.
+`200 {"sandboxes": [Sandbox, ...]}`, newest first. Killed sandboxes stay in the list as records; the server keeps at most 64 of them, oldest dropped first (see [limits](#limits)).
 
 ### `GET /v1/sandboxes/{sandbox_id}`
 
@@ -269,17 +269,23 @@ data: {"id":"exe_456","state":"completed","exit_code":0,"termination_reason":"ex
 |---|---|---|
 | Retained output per execution (stdout + stderr) | 1 MiB | further output is discarded, one `truncated` event is sent, `output_truncated: true`; the process keeps running |
 | Output events per execution | 4096 | same as above |
-| Executions retained per sandbox | 200 | the oldest completed execution is dropped, including its retained output and its idempotency key; the running execution is never dropped. `404 not_found` afterwards |
+| Executions retained per sandbox | 200 | the oldest completed execution is dropped, including its retained output and its idempotency key; the running execution and the newest completed one are never dropped. `404 not_found` afterwards |
+| Live sandboxes | 64 | `POST /v1/sandboxes` returns `429 rate_limited` and starts no container. A killed sandbox does not count |
+| Retained sandbox records | 64 killed sandboxes | the oldest killed record is dropped whole, including its execution history. `404 not_found` afterwards. Live sandboxes are never dropped |
+| Retained output, all sandboxes | 64 MiB | the oldest completed executions are dropped, across sandboxes, until the total fits. The running execution and each sandbox's newest completed one survive |
 | JSON request body | 1 MiB | `413 payload_too_large` |
 | File upload | 10 MiB | `413 payload_too_large` |
 | File download through Docker | 10 MiB | currently `502 backend_error` from archive extraction |
 
-The stored output is exactly the data delivered in events, so a replay from ID 0 reproduces `stdout` and `stderr`.
+The stored output is exactly the data delivered in events, so a replay from ID 0 reproduces `stdout` and `stderr`. The events are the server's only copy: `stdout` and `stderr` in an execution response and in the `complete` event are assembled from them.
+
+The first three limits are enforced by the server's periodic reaper, nominally once a second, so a store can briefly exceed the totals above. The live-sandbox limit is checked when the sandbox is created and is not subject to that delay.
 
 Because retention is bounded, an idempotency key is remembered only while its
 execution is retained. A start that reuses a key older than the 200 most recent
 executions is treated as a new start and runs the command again; clients that
-need a longer window must track execution IDs themselves.
+need a longer window must track execution IDs themselves. The same is true of a
+record dropped by the retained-record limit.
 
 ## Implementation limits
 
@@ -306,7 +312,9 @@ cleanup with the same owner label is the fallback.
 ## Server behavior
 
 - Listens on `127.0.0.1:8080` by default (`-addr` flag). Refuses to start on a non-loopback address unless `SANDBOX_API_KEY` is set.
-- Each container is labeled `tiny-sandbox.owner=<listen address>`. On startup the server attempts to remove containers carrying its own label and logs cleanup failures. State is in memory and is lost on restart. Shutdown does not itself remove containers; startup cleanup matches the listen address, so changing it will not clean containers owned by the previous address.
+- Each container is labeled `tiny-sandbox.owner=<owner>`, where `<owner>` is the `-owner` flag and defaults to the listen address. On startup the server attempts to remove containers carrying its own label and logs cleanup failures.
+- An ordinary stop (SIGINT, SIGTERM) ends open event streams, waits for in-flight requests up to 10 seconds, then removes every container it created. Containers therefore do not outlive a clean shutdown.
+- State is in memory and is lost on restart. A crash skips the shutdown sweep, so startup cleanup is the fallback. It matches the owner label: pin `-owner` when the listen address can change, or a restart on a different port will not clean up the previous process's containers.
 
 ## Implementation references
 

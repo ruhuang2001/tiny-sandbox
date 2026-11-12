@@ -27,8 +27,12 @@ RESULTS=$OUT/results.txt
 : >"$RESULTS"
 failures=0
 server_pid=""
+stream_pid=""
 
 cleanup() {
+  # The shutdown section runs a CLI in the background; a failure before it is
+  # joined would otherwise leave that process behind the trap.
+  [ -n "$stream_pid" ] && kill "$stream_pid" 2>/dev/null
   if [ -n "$server_pid" ]; then
     kill "$server_pid" 2>/dev/null
     wait "$server_pid" 2>/dev/null
@@ -382,8 +386,42 @@ fi
 # ---------------------------------------------------------------- auth
 
 note "auth"
+# Stop the first server and check its shutdown right here, before a restart on
+# the same owner label could clean up after it. Without this the final leak
+# check would pass even when shutdown leaves every container behind. A sandbox
+# is left behind deliberately, so the sweep has something to remove, and one
+# event stream stays open across the signal. The open stream is what makes the
+# promptness check real: http.Server.Shutdown does not cancel request contexts,
+# so without the handler's shutdown arm the drain waits out its whole deadline.
+"$BIN/sandboxctl" run --timeout 0 -- sh -c 'true' >"$OUT/sweep.out" 2>"$OUT/sweep.err"
+sweep_sandbox=$(sed -n 's/^sandbox: \(sbx_[a-z0-9]*\).*/\1/p' "$OUT/sweep.err" | head -1)
+"$BIN/sandboxctl" run --sandbox "$sweep_sandbox" -- sleep 120 >"$OUT/sweep-stream.out" 2>"$OUT/sweep-stream.err" &
+stream_pid=$!
+sleep 1
+started=$SECONDS
 kill "$server_pid" 2>/dev/null
 wait "$server_pid" 2>/dev/null
+elapsed=$((SECONDS - started))
+for _ in $(seq 1 50); do
+  kill -0 "$stream_pid" 2>/dev/null || break
+  sleep 0.1
+done
+if kill -0 "$stream_pid" 2>/dev/null; then
+  fail "shutdown stream" "the open stream ended with the server" "still running" "ended"
+  kill "$stream_pid" 2>/dev/null
+else
+  pass "shutdown stream"
+fi
+leftover=$(docker ps -aq --filter "label=tiny-sandbox.owner=$OWNER" | wc -l | tr -d ' ')
+check "shutdown sweep" "SIGTERM removes this process's containers" "$leftover" "0"
+# A drain that waits out its 10-second deadline is a shutdown that did not
+# finish, even when the containers end up removed. SECONDS is whole-second
+# resolution; a clean drain takes well under one.
+if [ "$elapsed" -lt 5 ]; then
+  pass "shutdown prompt"
+else
+  fail "shutdown prompt" "drain does not wait out its deadline" "${elapsed}s" "<5s"
+fi
 SANDBOX_API_KEY=e2e-secret "$BIN/sandboxd" -addr "127.0.0.1:$PORT" >"$SERVER_LOG.auth" 2>&1 &
 server_pid=$!
 for _ in $(seq 1 50); do
@@ -404,6 +442,44 @@ wait "$server_pid" 2>/dev/null
 server_pid=""
 docker ps -a --filter "label=tiny-sandbox.owner=$OWNER" --format '{{.ID}} {{.Names}}' >"$OUT/containers.txt"
 check "containers" "no sandbox containers remain" "$(wc -l <"$OUT/containers.txt" | tr -d ' ')" "0"
+
+# ---------------------------------------------------------------- crash recovery
+
+# A SIGKILL cannot run the shutdown sweep, so the container survives. The next
+# process is the only thing that can reclaim it, and it finds it by owner
+# label: this is what keeps a restart from leaking sandboxes, and what `-owner`
+# exists for when the listen address changes.
+note "crash recovery"
+"$BIN/sandboxd" -addr "127.0.0.1:$PORT" >"$SERVER_LOG.crash" 2>&1 &
+server_pid=$!
+for _ in $(seq 1 50); do
+  if curl -fsS "$SANDBOX_DOMAIN/healthz" >/dev/null 2>&1; then break; fi
+  sleep 0.1
+done
+"$BIN/sandboxctl" run --timeout 0 -- sh -c 'true' >"$OUT/crash.out" 2>"$OUT/crash.err"
+check "crash sandbox exits" "a sandbox ran before the crash" "$?" "0"
+# Name the container exactly, so this check does not depend on the label that
+# the startup sweep itself relies on: a broken label must fail the sweep check,
+# not silently turn "the orphan exists" into a pass.
+crash_sandbox=$(sed -n 's/^sandbox: \(sbx_[a-z0-9]*\).*/\1/p' "$OUT/crash.err" | head -1)
+crash_container="tiny-sandbox-$crash_sandbox"
+docker ps -a --filter "name=^${crash_container}$" --format '{{.ID}}' >"$OUT/crash-container.txt"
+
+kill -9 "$server_pid" 2>/dev/null
+wait "$server_pid" 2>/dev/null
+server_pid=""
+orphan=$(docker ps -a --filter "name=^${crash_container}$" --format '{{.ID}}' | wc -l | tr -d ' ')
+check "crash leaves orphan" "SIGKILL skips the shutdown sweep" "$orphan" "1"
+
+"$BIN/sandboxd" -addr "127.0.0.1:$PORT" >"$SERVER_LOG.restart" 2>&1 &
+server_pid=$!
+for _ in $(seq 1 50); do
+  if curl -fsS "$SANDBOX_DOMAIN/healthz" >/dev/null 2>&1; then break; fi
+  sleep 0.1
+done
+reclaimed=$(docker ps -a --filter "name=^${crash_container}$" --format '{{.ID}}' | wc -l | tr -d ' ')
+check "startup sweep" "the next start reclaims the orphan by owner label" "$reclaimed" "0"
+contains "startup sweep log" "startup cleanup is reported" "$SERVER_LOG.restart" "startup cleanup removed 1 leftover container"
 
 # ---------------------------------------------------------------- summary
 

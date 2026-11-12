@@ -43,9 +43,25 @@ const (
 	// oldest completed execution and its retained output are dropped; the
 	// running execution is never dropped.
 	MaxExecutionsPerSandbox = 200
+	// MaxSandboxes bounds live sandboxes. Each one holds a container and its
+	// memory, so an unbounded agent loop would exhaust the host rather than get
+	// an answer; a create beyond the bound is rate_limited. Killed records do
+	// not count: they cost no container.
+	MaxSandboxes = 64
+	// MaxRetainedSandboxes bounds killed records kept for idempotent delete and
+	// history. Above it the oldest killed record is dropped whole, because a
+	// record that only answers "this existed" is not worth an unbounded share of
+	// the process's memory.
+	MaxRetainedSandboxes = 64
+	// MaxRetainedOutputBytes bounds the output retained across every sandbox.
+	// Per-execution limits alone multiply: 200 executions of 1 MiB in one
+	// sandbox is 200 MiB, and that is per sandbox. Once the total is reached,
+	// the oldest completed executions are dropped until it fits.
+	MaxRetainedOutputBytes = 64 << 20
 	// BackendCallTimeout bounds one container-runtime call. The reaper shares
 	// one goroutine, so a call that never returns would stop timeout and
-	// eviction checks for every sandbox.
+	// eviction checks for every sandbox. Request paths use the same bound, so a
+	// stuck runtime cannot pin a sandbox lock.
 	BackendCallTimeout = 5 * time.Second
 )
 

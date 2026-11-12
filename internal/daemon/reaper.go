@@ -283,6 +283,7 @@ func (s *Sandboxes) Run(ctx context.Context) {
 			s.Reap(ctx)
 			s.EvictSweep(ctx)
 			s.retryRemovals(ctx)
+			s.prune()
 		}
 	}
 }
