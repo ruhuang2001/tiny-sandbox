@@ -14,7 +14,9 @@ import (
 //   - no panic or hang, and no allocation proportional to a declared frame
 //     size: a header may claim 4 GiB, and the implementation must stream;
 //   - a parse wrote exactly the stdout and stderr the frames declared, and
-//     nothing more, so a truncated frame never looks like a clean end.
+//     nothing more, so a truncated frame never looks like a clean end;
+//   - a truncated stream is reported as an error, because the destination
+//     alone cannot distinguish a short read from a complete one.
 func FuzzDemux(f *testing.F) {
 	f.Add(multiFrame(byte(streamOut), "hello ", byte(streamErr), "warn\n", byte(streamOut), "world\n"))
 	f.Add(multiFrame(byte(streamStdin), "typed at a prompt"))
@@ -26,10 +28,10 @@ func FuzzDemux(f *testing.F) {
 	f.Add([]byte{})                                   // empty stream
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		wantOut, wantErr := expectedDemux(data)
+		wantOut, wantErr, wantIncomplete := expectedDemux(data)
 
 		var out, errBuf bytes.Buffer
-		_ = Demux(bytes.NewReader(data), &out, &errBuf)
+		err := Demux(bytes.NewReader(data), &out, &errBuf)
 
 		if got := out.String(); got != wantOut {
 			t.Fatalf("stdout = %q, want %q", got, wantOut)
@@ -37,17 +39,22 @@ func FuzzDemux(f *testing.F) {
 		if got := errBuf.String(); got != wantErr {
 			t.Fatalf("stderr = %q, want %q", got, wantErr)
 		}
+		if gotIncomplete := err != nil; gotIncomplete != wantIncomplete {
+			t.Fatalf("Demux error = %v, want incomplete = %v for %q", err, wantIncomplete, data)
+		}
 	})
 }
 
 // expectedDemux parses the same bytes with an independent, deliberately naive
 // implementation. It is written separately from Demux on purpose: sharing the
 // parser would only reproduce its bugs.
-func expectedDemux(data []byte) (stdout, stderr string) {
+// The third result reports whether the stream ends mid-frame, which Demux must
+// report as an error.
+func expectedDemux(data []byte) (stdout, stderr string, incomplete bool) {
 	var out, errBuf bytes.Buffer
 	for len(data) > 0 {
 		if len(data) < frameHeader {
-			return out.String(), errBuf.String()
+			return out.String(), errBuf.String(), true
 		}
 		stream := data[0]
 		size := uint64(binary.BigEndian.Uint32(data[4:8]))
@@ -59,12 +66,12 @@ func expectedDemux(data []byte) (stdout, stderr string) {
 		// incomplete.
 		if uint64(len(body)) < size {
 			appendChunk(stream, body, &out, &errBuf)
-			return out.String(), errBuf.String()
+			return out.String(), errBuf.String(), true
 		}
 		appendChunk(stream, body[:size], &out, &errBuf)
 		data = body[size:]
 	}
-	return out.String(), errBuf.String()
+	return out.String(), errBuf.String(), false
 }
 
 // multiFrame concatenates frames, so a seed with several frames stays
