@@ -273,7 +273,14 @@ func (r *sseReader) next() (*Event, error) {
 }
 
 // parseEvent fills the typed payload of one event.
+//
+// A block that carried data but no event name is an error: the caller decides
+// what to do from the type, and an event with an empty type would reach an
+// onEvent callback as neither output nor a terminal event.
 func parseEvent(event *Event, data string) (*Event, error) {
+	if event.Type == "" {
+		return nil, &Error{Code: "stream", Message: "sandbox: an event carried data but no event type"}
+	}
 	switch event.Type {
 	case EventStdout, EventStderr:
 		var payload struct {
